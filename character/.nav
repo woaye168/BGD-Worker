@@ -1,0 +1,4 @@
+职责: 角色CRUD与配置管理
+出口: CharacterService
+入口: ../contract
+子图: service:角色服务（依赖CharacterRepository端口）

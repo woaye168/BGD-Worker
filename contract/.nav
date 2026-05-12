@@ -1,0 +1,4 @@
+职责: 领域类型、配置、错误、端口协议（最稳定层）
+出口: Character, Dialogue, Emotion, SynthesisScope, SynthesisRequest, SynthesisResult, AppConfig, TTSSettings, TTSEngine, CharacterRepository, DialogueRepository, AudioStore, DomainError, NotFoundError, ValidationError, TTSError, StorageError
+入口: 无（contract 层禁止依赖业务）
+子图: models:领域模型, config:应用配置, errors:领域错误, ports:跨层协议接口

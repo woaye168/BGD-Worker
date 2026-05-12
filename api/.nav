@@ -1,0 +1,4 @@
+职责: FastAPI HTTP接口、依赖注入、静态前端挂载
+出口: create_app
+入口: ../contract, ../character, ../dialogue, ../synthesis, ../storage, ../tts
+子图: app:应用工厂+异常映射, deps:依赖注入与生命周期, routes_character/routes_dialogue/routes_synthesis:三组路由

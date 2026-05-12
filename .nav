@@ -1,0 +1,4 @@
+职责: 游戏NPC情感语音生成服务，提供角色/对话管理与批量OGG合成
+总览: 核心模块=contract,character,dialogue,synthesis,storage,tts,api
+入口: 无（顶级模块）
+子图: contract:领域类型与端口协议, character:角色CRUD, dialogue:对话与批量导入, synthesis:合成编排与情感映射, storage:JSON仓储与音频文件存储, tts:TTS引擎适配, api:FastAPI HTTP接口
