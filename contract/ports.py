@@ -16,6 +16,8 @@
 #   - AudioStore.save 返回的字符串是相对 audio_dir.parent 的可读路径，可直接持久化到 Dialogue.audio_path
 #   - 仓储实现可同步（当前 JSON 文件实现即同步），编排层不假定异步
 
+from __future__ import annotations
+
 from pathlib import Path
 from typing import Optional, Protocol, runtime_checkable
 

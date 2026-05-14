@@ -12,6 +12,8 @@
 #   - 文件不存在则初始化为空数组 "[]"；datetime 通过 default=str 序列化为 ISO 字符串
 #   - JSON 文件结构是 list[dict]，每条记录用 model_dump(mode='json') 序列化
 
+from __future__ import annotations
+
 import json
 import threading
 from pathlib import Path

@@ -13,6 +13,8 @@
 #   - update 接受 partial dict，未提供字段保留原值
 #   - 修改角色配置不会自动失效已合成的对话音频（见 AI_MAINTENANCE.md 关键不变量）
 
+from __future__ import annotations
+
 from typing import Optional
 from uuid import uuid4
 

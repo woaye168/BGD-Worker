@@ -12,6 +12,8 @@
 #   - 修改 filename 不触发失效（仅影响下次导出文件名）
 #   - mark_synthesized 由 synthesis 编排器在写入音频后调用，唯一允许设置 audio_path 的入口
 
+from __future__ import annotations
+
 from datetime import datetime
 from uuid import uuid4
 
