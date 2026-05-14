@@ -10,6 +10,8 @@
 #   - 入口固定为 desktop.py；产物名 NPC-Voice-Gen，置于 dist/
 #   - web/ 前端目录与 imageio-ffmpeg 静态二进制必须随包，否则冻结后前端/转码不可用
 #   - 打包前先调用 get_ffmpeg_exe() 物化 ffmpeg 二进制，确保 --collect-all 能收集到
+#   - 不对 webview 用 --collect-all：它含 gtk/cocoa/qt 等跨平台后端子模块，
+#     在当前 OS 上 import 会失败；改为依赖 PyInstaller 自带的平台感知 hook
 #   - --add-data 分隔符随平台：Windows 用 ';'，其他用 ':'
 #   - 由 .github/workflows/ci.yml 在 windows/macos runner 上真实验证
 
@@ -21,7 +23,10 @@ ROOT = Path(__file__).resolve().parent
 
 
 def build() -> None:
+    import PyInstaller
     import PyInstaller.__main__
+
+    print(f"PyInstaller {PyInstaller.__version__} on {sys.platform}")
 
     try:
         import imageio_ffmpeg
@@ -39,7 +44,8 @@ def build() -> None:
         f"--add-data={ROOT / 'web'}{sep}web",
         "--collect-all=edge_tts",
         "--collect-all=imageio_ffmpeg",
-        "--collect-all=webview",
+        # webview 不用 --collect-all：其 platforms 子包含 gtk/cocoa/qt 等跨平台后端，
+        # 在当前 OS 上 import 会失败；交给 PyInstaller 内置的平台感知 hook 处理。
         "--collect-submodules=uvicorn",
         "--hidden-import=uvicorn.lifespan.on",
         "--hidden-import=uvicorn.protocols.http.auto",
