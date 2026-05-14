@@ -10,6 +10,7 @@ uv.lock
 .idea/
 .vscode/
 *.egg-info/
+*.spec
 dist/
 build/
 data/

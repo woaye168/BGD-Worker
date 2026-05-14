@@ -10,6 +10,7 @@ dependencies = [
     "edge-tts>=6.1.12",
     "python-multipart>=0.0.12",
     "imageio-ffmpeg>=0.5",
+    "pywebview>=5.0",
 ]
 
 [build-system]
@@ -24,6 +25,7 @@ dev-dependencies = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "httpx>=0.27",
+    "pyinstaller>=6.0",
 ]
 
 [tool.pytest.ini_options]
