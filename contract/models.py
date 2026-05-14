@@ -3,7 +3,7 @@
 # @contract:
 #   - Emotion: Enum (neutral/happy/sad/angry/surprise/fear/calm)
 #   - Character(id, name, voice, rate, pitch, volume, default_emotion)
-#   - Dialogue(id, character_id, text, emotion, filename, created_at, audio_path, synthesized_at)
+#   - Dialogue(id, character_id, text, emotion, scene, filename, created_at, audio_path, synthesized_at)
 #   - SynthesisScope: Enum (pending/all/selected)
 #   - SynthesisRequest(scope, dialogue_ids)
 #   - SynthesisResult(dialogue_id, success, audio_path, error)
@@ -14,6 +14,7 @@
 # @invariants:
 #   - 所有模型为贫血领域模型，不含业务行为方法
 #   - Dialogue.audio_path 为空 ⇔ 该对话从未合成 / 合成已失效
+#   - Dialogue.scene 是自由文本分组标签（场景/对话组），空串表示未分组；导入时由调用方赋值
 #   - Character.rate/pitch/volume 不约束硬上下限，由 TTS 引擎层裁剪
 #   - 字符串 id 由 service 层生成（uuid4 hex 前 10 位），contract 层不规定
 
@@ -49,6 +50,7 @@ class Dialogue(BaseModel):
     character_id: str
     text: str
     emotion: Emotion = Emotion.NEUTRAL
+    scene: str = ""
     filename: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     audio_path: Optional[str] = None
