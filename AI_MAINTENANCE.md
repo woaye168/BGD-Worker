@@ -4,9 +4,11 @@
 
 ## 项目概览
 
-- **栈**：UV (包管理) + FastAPI (HTTP) + Pydantic (类型) + edge-tts (默认 TTS) + ffmpeg (转码)
+- **栈**：UV (包管理) + FastAPI (HTTP) + Pydantic (类型) + edge-tts (默认 TTS) +
+  imageio-ffmpeg (捆绑 ffmpeg) + pywebview (桌面窗口) + PyInstaller (打包)
 - **架构**：三层依赖单向 DAG，`adapter → logic → contract`
 - **模块**：见根 `.nav` 的 `总览` 行
+- **入口**：`desktop.py` 桌面应用 / `main.py` 开发服务 / `build.py` 打包脚本
 
 ## 工作模式判断
 
@@ -47,6 +49,14 @@
 - `Dialogue.audio_path` 为空 ⇔ 该对话从未合成 / 合成已失效（这是"仅未合成"筛选的唯一依据）
 - 编辑对话的 `text`/`emotion`/`character_id` 三个字段中任一 → 必须清空 `audio_path` 与 `synthesized_at`
 - 编辑角色配置 **不会** 自动失效已合成的对话音频；如需重生成请走 "全部" 范围批量合成
+- `AppConfig.data_dir` 是唯一数据根，`audio_dir`/`characters_file`/`dialogues_file` 全部派生；
+  冻结模式(`sys.frozen`)落用户家目录，否则 `./data`，`NPC_VOICE_DATA_DIR` 可覆盖
+- 静态前端目录：冻结模式从 `sys._MEIPASS/web` 解析，否则项目根 `web/`（见 `api/app.py:_web_dir`）
+- 音频格式由 `TTSSettings.output_format` 决定；ffmpeg 三级探测（显式→系统 PATH→imageio-ffmpeg），
+  要求 ogg/wav 但无 ffmpeg 时引擎构造期自动降级 mp3，**绝不因缺 ffmpeg 而完全不可用**
+- 落盘文件扩展名取自 `TTSEngine.output_extension`，禁止在编排/路由层硬编码格式
+- 剧本导入时未登记角色是否自动建档由 `api/routes_dialogue.py` 的 resolver 决定（`auto_create` 表单字段），
+  `importer` 本身保持纯函数、不触碰 `CharacterService`
 
 ## 反模式
 
@@ -72,5 +82,20 @@
 
 1. 在 `contract/models.py:Emotion` 枚举添加新成员
 2. 在 `synthesis/emotion_mapper.py` 两张表中各加一条
-3. (可选) 更新前端 `web/index.html` 中的情感选项
-4. 跑现有 dialogue 数据兼容性 (旧 JSON 里没有该值不会破坏)
+3. 在 `dialogue/importer.py:_EMOTION_ALIASES` 加中/英文别名（供剧本/CSV 解析识别）
+4. (可选) 更新前端 `web/index.html` 的 `EMOTIONS` 映射
+5. 跑现有 dialogue 数据兼容性 (旧 JSON 里没有该值不会破坏)
+
+### 添加新音频格式
+
+1. 在 `tts/edge_tts_engine.py:_TRANSCODE` 加 `格式: (ffmpeg编码器, 容器)`
+2. 在 `tts/edge_tts_engine.py:EdgeTTSEngine.__init__` 的合法格式集合加入新值
+3. 在 `api/routes_synthesis.py:_MEDIA_TYPES` 与 `api/routes_character.py:_MEDIA_TYPES` 加 MIME 映射
+4. `contract/config.py:TTSSettings.output_format` 的注释取值范围同步更新
+
+### 打包桌面应用
+
+1. `uv sync` 安装运行时依赖（含 pywebview / imageio-ffmpeg）
+2. `uv run python build.py` —— PyInstaller 单目录打包，产物在 `dist/NPC-Voice-Gen/`
+3. 必须在目标 OS 本机执行：Windows 上得 Windows 包，macOS 上得 mac 包
+4. Linux 下 pywebview 需系统 GTK/WebKit 库；若缺失，可改用 `python main.py` 浏览器模式
