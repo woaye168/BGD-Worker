@@ -8,8 +8,9 @@
 #   - ../contract/ports.py: TTSEngine, AudioStore, CharacterRepository, DialogueRepository
 #   - ../contract/errors.py: NotFoundError
 # @invariants:
-#   - render(dialogue) 不持久化：仅调用 TTS 引擎返回 OGG 字节，供"试听未合成对话"使用
+#   - render(dialogue) 不持久化：仅调用 TTS 引擎返回音频字节，供"试听未合成对话"使用
 #   - synthesize_one(dialogue) 必持久化：写 AudioStore 并通过 DialogueRepository.upsert 设置 audio_path
+#   - 落盘文件扩展名取自 TTSEngine.output_extension（不再硬编码 .ogg）
 #   - select(PENDING) 仅返回 audio_path 为空的对话（即"从新增对话开始"的语义来源）
 #   - batch 顺序处理，逐条 yield 结果；单条失败不影响后续；调用方需自行收集
 #   - 失败的合成不写入 audio_path，下次 PENDING 范围会自动重试
@@ -79,7 +80,8 @@ class SynthesisOrchestrator:
                 volume=character.volume,
             )
             base = dialogue.filename or f"{character.name}_{dialogue.id}"
-            audio_path = self._audio.save(dialogue.id, f"{base}.ogg", data)
+            ext = self._tts.output_extension
+            audio_path = self._audio.save(dialogue.id, f"{base}.{ext}", data)
             updated = dialogue.model_copy(update={
                 "audio_path": audio_path,
                 "synthesized_at": datetime.utcnow(),

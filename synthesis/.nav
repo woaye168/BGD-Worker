@@ -1,4 +1,4 @@
-职责: 合成编排、增量筛选、情感参数映射
-出口: SynthesisOrchestrator, get_prosody, get_azure_style, EMOTION_TO_PROSODY, EMOTION_TO_AZURE_STYLE
+职责: 合成编排、增量筛选、情感参数映射、音频打包导出
+出口: SynthesisOrchestrator, get_prosody, get_azure_style, EMOTION_TO_PROSODY, EMOTION_TO_AZURE_STYLE, build_zip
 入口: ../contract
-子图: orchestrator:批量合成编排（select+render+persist）, emotion_mapper:情感→prosody/SSML style 映射
+子图: orchestrator:批量合成编排（select+render+persist）, emotion_mapper:情感→prosody/SSML style 映射, exporter:已合成音频按场景/角色打包ZIP+清单
