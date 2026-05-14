@@ -1,4 +1,4 @@
 职责: 对话CRUD与多格式批量导入
-出口: DialogueService, parse_csv, parse_json, parse_text, normalize_emotion
+出口: DialogueService, parse_screenplay, parse_csv, parse_json, parse_text, normalize_emotion
 入口: ../contract
-子图: service:对话服务（含合成失效逻辑）, importer:CSV/JSON/纯文本解析
+子图: service:对话服务（含合成失效逻辑）, importer:剧本/CSV/JSON/纯文本解析

@@ -66,7 +66,10 @@ def get_tts_engine() -> TTSEngine:
     cfg = get_config()
     engine = cfg.tts.engine
     if engine == "edge":
-        return EdgeTTSEngine(ffmpeg_path=cfg.tts.ffmpeg_path)
+        return EdgeTTSEngine(
+            output_format=cfg.tts.output_format,
+            ffmpeg_path=cfg.tts.ffmpeg_path,
+        )
     raise DomainError(f"未知 TTS 引擎: {engine}")
 
 

@@ -17,8 +17,9 @@
 #   - ./deps.py
 # @invariants:
 #   - 导入接口接受 content (字符串粘贴) 或 file (上传)；file 优先
-#   - format 取值：csv | json | lines；其他值返回 400
-#   - 角色名解析使用 character_service.find_by_name；未匹配回退到 default_character_id
+#   - format 取值：screenplay | csv | json | lines；其他值返回 400
+#   - auto_create=True 时未知角色名自动建档（默认音色），实现"粘贴剧本即生成"的核心流程
+#   - scene 表单字段统一写入本批所有对话的 Dialogue.scene
 
 from typing import Optional
 
@@ -55,6 +56,8 @@ async def batch_import(
     file: Optional[UploadFile] = File(None),
     default_character_id: str = Form(""),
     default_emotion: str = Form("neutral"),
+    scene: str = Form(""),
+    auto_create: bool = Form(True),
     dlg_svc: DialogueService = Depends(get_dialogue_service),
     char_svc: CharacterService = Depends(get_character_service),
 ):
@@ -69,24 +72,37 @@ async def batch_import(
     except ValueError:
         default_emo = Emotion.NEUTRAL
 
+    created_names: list[str] = []
+
     def resolver(name: str) -> str:
-        c = char_svc.find_by_name(name)
-        return c.id if c else ""
+        name = (name or "").strip()
+        if not name:
+            return ""
+        existing = char_svc.find_by_name(name)
+        if existing:
+            return existing.id
+        if auto_create:
+            character = char_svc.create({"name": name})
+            created_names.append(name)
+            return character.id
+        return ""
 
     try:
-        if format == "csv":
-            dialogues = importer.parse_csv(content, resolver, default_character_id, default_emo)
+        if format == "screenplay":
+            dialogues = importer.parse_screenplay(content, resolver, default_emo, scene)
+        elif format == "csv":
+            dialogues = importer.parse_csv(content, resolver, default_character_id, default_emo, scene)
         elif format == "json":
-            dialogues = importer.parse_json(content, resolver, default_character_id, default_emo)
+            dialogues = importer.parse_json(content, resolver, default_character_id, default_emo, scene)
         elif format == "lines":
-            dialogues = importer.parse_text(content, default_character_id, default_emo)
+            dialogues = importer.parse_text(content, default_character_id, default_emo, scene)
         else:
             raise HTTPException(400, f"unknown format: {format}")
     except ValidationError as e:
         raise HTTPException(400, str(e))
 
     count = dlg_svc.bulk_add(dialogues)
-    return {"imported": count}
+    return {"imported": count, "created_characters": created_names}
 
 
 @router.get("/{id}", response_model=Dialogue)

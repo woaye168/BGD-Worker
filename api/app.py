@@ -3,14 +3,17 @@
 # @contract:
 #   - create_app() -> FastAPI
 # @depends:
+#   - sys, pathlib (stdlib)
 #   - fastapi, fastapi.middleware.cors, fastapi.staticfiles
 #   - ../contract/errors.py
 #   - ./routes_character.py, ./routes_dialogue.py, ./routes_synthesis.py
 # @invariants:
 #   - 路由前缀均以 /api 开头，便于静态资源挂载 / 不冲突
 #   - 静态目录 web/ 若存在则挂载到 /，提供前端 SPA
+#   - 冻结模式(PyInstaller)下 web/ 从 sys._MEIPASS 解析，开发模式从项目根解析
 #   - 仅在此层注册全局异常处理器，业务模块不直接返回 HTTP 响应
 
+import sys
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -65,8 +68,14 @@ def create_app() -> FastAPI:
     app.include_router(dialogue_router)
     app.include_router(synthesis_router)
 
-    web_dir = Path(__file__).resolve().parent.parent / "web"
+    web_dir = _web_dir()
     if web_dir.exists():
         app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="static")
 
     return app
+
+
+def _web_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS", ".")) / "web"
+    return Path(__file__).resolve().parent.parent / "web"
