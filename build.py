@@ -13,6 +13,7 @@
 #   - 不对 webview 用 --collect-all：它含 gtk/cocoa/qt 等跨平台后端子模块，
 #     在当前 OS 上 import 会失败；改为依赖 PyInstaller 自带的平台感知 hook
 #   - --add-data 分隔符随平台：Windows 用 ';'，其他用 ':'
+#   - print 输出一律 ASCII：Windows 控制台默认 cp1252，中文会触发 UnicodeEncodeError
 #   - 由 .github/workflows/ci.yml 在 windows/macos runner 上真实验证
 
 import os
@@ -30,9 +31,9 @@ def build() -> None:
 
     try:
         import imageio_ffmpeg
-        print("imageio-ffmpeg 二进制:", imageio_ffmpeg.get_ffmpeg_exe())
+        print("imageio-ffmpeg binary:", imageio_ffmpeg.get_ffmpeg_exe())
     except Exception as e:  # noqa: BLE001 - 仅诊断，缺失由 --collect-all 兜底
-        print(f"警告: 无法定位 imageio-ffmpeg 二进制: {e}", file=sys.stderr)
+        print(f"WARNING: cannot locate imageio-ffmpeg binary: {e}", file=sys.stderr)
 
     sep = ";" if os.name == "nt" else ":"
     args = [
@@ -53,12 +54,12 @@ def build() -> None:
     ]
     print("PyInstaller args:", " ".join(args))
     PyInstaller.__main__.run(args)
-    print("\n构建完成 → dist/")
+    print("\nBuild complete -> dist/")
 
 
 if __name__ == "__main__":
     try:
         build()
     except ImportError as e:
-        print(f"缺少打包依赖（{e}），请先执行：uv sync", file=sys.stderr)
+        print(f"Missing build dependency ({e}); run: uv sync", file=sys.stderr)
         sys.exit(1)
