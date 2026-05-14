@@ -9,6 +9,7 @@ dependencies = [
     "pydantic>=2.9",
     "edge-tts>=6.1.12",
     "python-multipart>=0.0.12",
+    "imageio-ffmpeg>=0.5",
 ]
 
 [build-system]
