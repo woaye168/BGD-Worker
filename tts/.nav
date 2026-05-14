@@ -1,0 +1,4 @@
+职责: TTS引擎适配（实现 contract.ports.TTSEngine）
+出口: EdgeTTSEngine, resolve_ffmpeg
+入口: ../contract, ../synthesis
+子图: edge_tts_engine:edge-tts合成+ffmpeg三级探测+OGG/MP3/WAV, 未来扩展:rest_engine(本地REST服务)

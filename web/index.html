@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>游戏NPC语音生成器</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: #0d1117; color: #e6edf3; line-height: 1.55; min-height: 100vh; }
+.app { max-width: 1500px; margin: 0 auto; padding: 18px 22px; }
+header { display: flex; justify-content: space-between; align-items: flex-end; padding-bottom: 14px; border-bottom: 1px solid #30363d; }
+h1 { font-size: 19px; }
+.subtitle { color: #8b949e; font-size: 12px; margin-top: 3px; }
+nav { display: flex; gap: 6px; margin: 16px 0; }
+nav button { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; padding: 9px 18px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+nav button.active { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+section { display: none; }
+section.active { display: block; }
+.box { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 14px; }
+.panel-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; gap: 10px; flex-wrap: wrap; }
+.panel-head h2 { font-size: 15px; }
+button.primary { background: #238636; color: #fff; border: 1px solid rgba(240,246,252,0.1); padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+button.primary:hover { background: #2ea043; }
+button.secondary { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; padding: 7px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+button.secondary:hover { background: #30363d; }
+button.danger { background: #21262d; color: #f85149; border: 1px solid #30363d; padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+button.danger:hover { background: #da3633; color: #fff; }
+button.warn { background: #9e6a03; color: #fff; border: 1px solid rgba(240,246,252,0.1); padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+button.warn:hover { background: #bb8009; }
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+.card { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 11px; margin-bottom: 9px; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+input, select, textarea { background: #0d1117; color: #e6edf3; border: 1px solid #30363d; padding: 7px 10px; border-radius: 6px; font-size: 13px; font-family: inherit; }
+textarea { width: 100%; resize: vertical; font-family: ui-monospace, Menlo, Consolas, monospace; line-height: 1.6; }
+input:focus, select:focus, textarea:focus { outline: none; border-color: #1f6feb; box-shadow: 0 0 0 3px rgba(31,111,235,0.3); }
+label { font-size: 11px; color: #8b949e; display: block; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.04em; }
+.field { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 130px; }
+.field.tight { flex: 0 0 auto; }
+.tag { padding: 2px 8px; border-radius: 11px; font-size: 11px; white-space: nowrap; }
+.emo-happy { background: #d2992233; color: #f0883e; } .emo-sad { background: #6e768133; color: #8b949e; }
+.emo-angry { background: #da363333; color: #f85149; } .emo-surprise { background: #a37bff33; color: #bc8cff; }
+.emo-fear { background: #3fb95033; color: #56d364; } .emo-calm { background: #1f6feb33; color: #58a6ff; }
+.emo-neutral { background: #30363d; color: #c9d1d9; }
+.status-pending { color: #d29922; } .status-done { color: #3fb950; } .status-error { color: #f85149; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 8px 8px; border-bottom: 1px solid #21262d; font-size: 13px; vertical-align: middle; }
+th { color: #8b949e; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+.scene-head { background: #1c2333; color: #58a6ff; font-size: 12px; padding: 7px 10px; border-radius: 5px; margin: 14px 0 6px; font-weight: 600; }
+.empty { text-align: center; padding: 48px 20px; color: #6e7681; }
+.empty h3 { color: #c9d1d9; font-size: 15px; margin-bottom: 6px; }
+.progress { background: #21262d; height: 7px; border-radius: 4px; overflow: hidden; margin: 10px 0 6px; }
+.progress-bar { background: #1f6feb; height: 100%; transition: width 0.25s; width: 0; }
+.modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.72); display: none; z-index: 100; align-items: center; justify-content: center; padding: 20px; }
+.modal-backdrop.show { display: flex; }
+.modal { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; min-width: 560px; max-width: 820px; width: 100%; max-height: 92vh; overflow: auto; }
+.toast { position: fixed; bottom: 20px; right: 20px; background: #1f6feb; color: #fff; padding: 11px 16px; border-radius: 6px; z-index: 200; font-size: 13px; max-width: 420px; box-shadow: 0 6px 24px rgba(0,0,0,0.4); }
+.toast.error { background: #da3633; } .toast.success { background: #238636; }
+audio { vertical-align: middle; height: 30px; }
+.hint { font-size: 12px; color: #8b949e; padding: 8px 12px; background: #0d1117; border-left: 2px solid #1f6feb; border-radius: 4px; margin: 6px 0; }
+.mono { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+.mb-2 { margin-bottom: 10px; } .mb-3 { margin-bottom: 14px; }
+.muted { color: #6e7681; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div>
+      <h1>🎙️ 游戏NPC语音生成器</h1>
+      <div class="subtitle">粘贴策划剧本 → 自动建角色 → 批量合成 → 打包导出</div>
+    </div>
+    <div class="muted" id="statSummary"></div>
+  </header>
+
+  <nav>
+    <button data-tab="dialogues" class="active">💬 对话与合成</button>
+    <button data-tab="characters">👤 角色配置</button>
+  </nav>
+
+  <!-- ============ 对话与合成 ============ -->
+  <section id="dialogues" class="active">
+    <div class="box">
+      <div class="panel-head">
+        <h2>批量合成</h2>
+        <div class="row">
+          <button class="secondary" id="pasteScript">📋 粘贴剧本导入</button>
+          <button class="secondary" id="addDialogue">+ 单条新增</button>
+        </div>
+      </div>
+      <div class="row mb-2">
+        <div class="field tight" style="min-width:200px">
+          <label>合成范围</label>
+          <select id="genScope">
+            <option value="pending">仅未合成（新增/改动后）</option>
+            <option value="all">全部对话（重新合成）</option>
+            <option value="selected">仅勾选的对话</option>
+          </select>
+        </div>
+        <div class="field tight">
+          <label>&nbsp;</label>
+          <div class="row">
+            <button class="primary" id="startGen">▶ 开始合成</button>
+            <button class="secondary" id="exportZip">📦 导出 ZIP</button>
+          </div>
+        </div>
+      </div>
+      <div class="progress"><div class="progress-bar" id="progBar"></div></div>
+      <div class="muted" id="genStatus">就绪。</div>
+    </div>
+
+    <div class="box">
+      <div class="panel-head">
+        <h2>对话列表</h2>
+        <span class="muted" id="dialogueCount"></span>
+      </div>
+      <div id="dialogueList"></div>
+    </div>
+  </section>
+
+  <!-- ============ 角色配置 ============ -->
+  <section id="characters">
+    <div class="box">
+      <div class="panel-head">
+        <h2>角色列表</h2>
+        <button class="primary" id="addCharacter">+ 新增角色</button>
+      </div>
+      <div class="hint">角色绑定一个 TTS 音色 + 基础音速/音调/音量。粘贴剧本时未登记的角色会用默认音色自动建档，之后可在此调整。</div>
+      <div id="characterList"></div>
+    </div>
+  </section>
+</div>
+
+<div class="modal-backdrop" id="modal"><div class="modal" id="modalContent"></div></div>
+
+<script>
+'use strict';
+
+const EMOTIONS = { neutral:'中性', happy:'开心', sad:'悲伤', angry:'愤怒', surprise:'惊讶', fear:'害怕', calm:'平静' };
+const LANG_PRIORITY = ['zh-CN','zh-TW','zh-HK','en-US','en-GB','ja-JP','ko-KR'];
+
+const state = { characters: [], dialogues: [], voices: [] };
+let synthController = null;
+
+const $ = s => document.querySelector(s);
+const escapeHtml = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+
+async function api(path, options = {}) {
+  const res = await fetch(path, {
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    ...options,
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail || detail; } catch (e) {}
+    throw new Error(detail);
+  }
+  const ct = res.headers.get('content-type') || '';
+  return ct.includes('application/json') ? res.json() : res;
+}
+
+function toast(msg, type = 'info', ms = 3000) {
+  const t = document.createElement('div');
+  t.className = 'toast ' + type;
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), ms);
+}
+
+function openModal(html) { $('#modalContent').innerHTML = html; $('#modal').classList.add('show'); }
+function closeModal() { $('#modal').classList.remove('show'); }
+$('#modal').addEventListener('click', e => { if (e.target.id === 'modal') closeModal(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+document.querySelectorAll('nav button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('section').forEach(s => s.classList.remove('active'));
+    btn.classList.add('active');
+    $('#' + btn.dataset.tab).classList.add('active');
+  });
+});
+
+function updateSummary() {
+  const total = state.dialogues.length;
+  const done = state.dialogues.filter(d => d.audio_path).length;
+  $('#statSummary').textContent = `${state.characters.length} 个角色 · ${total} 条对话 · ${done} 条已合成`;
+  $('#dialogueCount').textContent = total ? `共 ${total} 条 · 已合成 ${done} · 待合成 ${total - done}` : '';
+}
+
+/* ================= 角色 ================= */
+async function reloadCharacters() {
+  state.characters = await api('/api/characters');
+  renderCharacters();
+  renderDialogues();
+  updateSummary();
+}
+
+function charName(id) {
+  const c = state.characters.find(x => x.id === id);
+  return c ? c.name : null;
+}
+
+function renderCharacters() {
+  const list = $('#characterList');
+  if (!state.characters.length) {
+    list.innerHTML = '<div class="empty"><h3>还没有角色</h3><div>点击「+ 新增角色」，或直接到「对话与合成」粘贴剧本自动建档。</div></div>';
+    return;
+  }
+  list.innerHTML = state.characters.map(c => `
+    <div class="card">
+      <div class="row">
+        <div class="field tight" style="min-width:150px"><label>角色名</label><strong>${escapeHtml(c.name)}</strong></div>
+        <div class="field"><label>音色</label><span class="mono">${escapeHtml(c.voice)}</span></div>
+        <div class="field tight" style="min-width:60px"><label>语速</label>${c.rate.toFixed(2)}</div>
+        <div class="field tight" style="min-width:60px"><label>音调</label>${c.pitch.toFixed(2)}</div>
+        <div class="field tight" style="min-width:60px"><label>音量</label>${c.volume.toFixed(2)}</div>
+        <div class="field tight" style="min-width:70px"><label>默认情感</label><span class="tag emo-${c.default_emotion}">${EMOTIONS[c.default_emotion]}</span></div>
+        <div class="field tight"><label>&nbsp;</label><div class="row">
+          <button class="secondary" data-act="edit" data-id="${c.id}">编辑</button>
+          <button class="danger" data-act="delete" data-id="${c.id}">删除</button>
+        </div></div>
+      </div>
+    </div>`).join('');
+  list.querySelectorAll('button[data-act]').forEach(b => b.addEventListener('click', () => {
+    const { act, id } = b.dataset;
+    if (act === 'edit') openCharacterForm(state.characters.find(x => x.id === id));
+    else if (act === 'delete') deleteCharacter(id);
+  }));
+}
+
+function sortedLangs() {
+  const langs = [...new Set(state.voices.map(v => v.lang).filter(Boolean))];
+  return langs.sort((a, b) => {
+    const ia = LANG_PRIORITY.indexOf(a), ib = LANG_PRIORITY.indexOf(b);
+    if (ia !== -1 || ib !== -1) return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+    return a.localeCompare(b);
+  });
+}
+
+function characterFormHtml(c) {
+  const langOpts = ['<option value="">全部语言</option>']
+    .concat(sortedLangs().map(l => `<option value="${l}">${l}</option>`)).join('');
+  const emoOpts = Object.entries(EMOTIONS)
+    .map(([k, v]) => `<option value="${k}" ${c?.default_emotion === k ? 'selected' : ''}>${v}</option>`).join('');
+  return `
+    <h2 class="mb-3">${c ? '编辑角色' : '新增角色'}</h2>
+    <div class="field mb-2"><label>角色名 *</label><input id="cName" value="${escapeHtml(c?.name || '')}" placeholder="例：村长老李"></div>
+    <div class="row mb-2">
+      <div class="field tight" style="min-width:160px"><label>语言筛选</label><select id="cLang">${langOpts}</select></div>
+      <div class="field"><label>搜索音色</label><input id="cVoiceSearch" placeholder="按名称/ID 过滤，如 Xiaoxiao"></div>
+    </div>
+    <div class="field mb-2"><label>音色 *</label><select id="cVoice" size="6" style="height:auto"></select></div>
+    <div class="row mb-2">
+      <div class="field"><label>语速 (0.5-2.0)</label><input id="cRate" type="number" step="0.05" min="0.5" max="2" value="${c?.rate ?? 1.0}"></div>
+      <div class="field"><label>音调 (0-2.0)</label><input id="cPitch" type="number" step="0.05" min="0" max="2" value="${c?.pitch ?? 1.0}"></div>
+      <div class="field"><label>音量 (0-1.0)</label><input id="cVolume" type="number" step="0.05" min="0" max="1" value="${c?.volume ?? 1.0}"></div>
+      <div class="field"><label>默认情感</label><select id="cEmotion">${emoOpts}</select></div>
+    </div>
+    <div class="row mb-3">
+      <div class="field"><label>试听文本</label><input id="cAuditionText" value="你好，旅行者，欢迎来到这片土地。"></div>
+      <div class="field tight"><label>&nbsp;</label><button class="secondary" id="cAudition">🔊 试听当前音色</button></div>
+    </div>
+    <div class="row">
+      <span class="muted" id="cVoiceCount"></span>
+      <span style="flex:1"></span>
+      <button class="secondary" id="cCancel">取消</button>
+      <button class="primary" id="cSave">${c ? '保存' : '创建'}</button>
+    </div>`;
+}
+
+function refreshVoiceOptions(currentVoice) {
+  const lang = $('#cLang').value;
+  const kw = $('#cVoiceSearch').value.trim().toLowerCase();
+  const filtered = state.voices.filter(v =>
+    (!lang || v.lang === lang) &&
+    (!kw || v.id.toLowerCase().includes(kw) || (v.name || '').toLowerCase().includes(kw)));
+  const sel = $('#cVoice');
+  sel.innerHTML = filtered.map(v =>
+    `<option value="${escapeHtml(v.id)}" ${v.id === currentVoice ? 'selected' : ''}>${escapeHtml(v.name)} · ${escapeHtml(v.lang)} ${v.gender ? '· ' + escapeHtml(v.gender) : ''}</option>`).join('');
+  if (!sel.value && filtered.length) sel.value = filtered[0].id;
+  $('#cVoiceCount').textContent = `${filtered.length} / ${state.voices.length} 个音色`;
+}
+
+function openCharacterForm(c = null) {
+  openModal(characterFormHtml(c));
+  const initialVoice = c?.voice || 'zh-CN-XiaoxiaoNeural';
+  if (c?.voice) {
+    const v = state.voices.find(x => x.id === c.voice);
+    if (v) $('#cLang').value = v.lang;
+  }
+  refreshVoiceOptions(initialVoice);
+  $('#cLang').addEventListener('change', () => refreshVoiceOptions($('#cVoice').value));
+  $('#cVoiceSearch').addEventListener('input', () => refreshVoiceOptions($('#cVoice').value));
+  $('#cCancel').onclick = closeModal;
+  $('#cAudition').onclick = async () => {
+    const voice = $('#cVoice').value;
+    if (!voice) return toast('请先选择一个音色', 'error');
+    $('#cAudition').disabled = true;
+    $('#cAudition').textContent = '合成中…';
+    try {
+      const res = await fetch('/api/characters/audition', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          voice, text: $('#cAuditionText').value,
+          emotion: $('#cEmotion').value,
+          rate: parseFloat($('#cRate').value) || 1,
+          pitch: parseFloat($('#cPitch').value) || 1,
+          volume: parseFloat($('#cVolume').value) || 1,
+        }),
+      });
+      if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+      new Audio(URL.createObjectURL(await res.blob())).play();
+    } catch (e) { toast('试听失败：' + e.message, 'error'); }
+    finally { $('#cAudition').disabled = false; $('#cAudition').textContent = '🔊 试听当前音色'; }
+  };
+  $('#cSave').onclick = async () => {
+    const data = {
+      name: $('#cName').value.trim(),
+      voice: $('#cVoice').value,
+      rate: parseFloat($('#cRate').value) || 1,
+      pitch: parseFloat($('#cPitch').value) || 1,
+      volume: parseFloat($('#cVolume').value) || 1,
+      default_emotion: $('#cEmotion').value,
+    };
+    if (!data.name) return toast('请填写角色名', 'error');
+    if (!data.voice) return toast('请选择音色', 'error');
+    try {
+      if (c) await api(`/api/characters/${c.id}`, { method: 'PATCH', body: JSON.stringify(data) });
+      else await api('/api/characters', { method: 'POST', body: JSON.stringify(data) });
+      await reloadCharacters();
+      closeModal();
+      toast(c ? '已更新' : '已创建', 'success');
+    } catch (e) { toast(e.message, 'error'); }
+  };
+}
+
+async function deleteCharacter(id) {
+  if (!confirm('确定删除该角色？该角色的对话不会被删除，但会变成"未指定角色"。')) return;
+  try { await api(`/api/characters/${id}`, { method: 'DELETE' }); await reloadCharacters(); toast('已删除'); }
+  catch (e) { toast(e.message, 'error'); }
+}
+$('#addCharacter').addEventListener('click', () => openCharacterForm());
+
+/* ================= 对话 ================= */
+async function reloadDialogues() {
+  state.dialogues = await api('/api/dialogues');
+  renderDialogues();
+  updateSummary();
+}
+
+function renderDialogues() {
+  const list = $('#dialogueList');
+  if (!state.dialogues.length) {
+    list.innerHTML = `<div class="empty">
+      <h3>还没有对话</h3>
+      <div>真实流程：把策划写好的多角色剧本文案，点「📋 粘贴剧本导入」直接贴进来，<br>
+      未登记的角色会自动建档，然后就能批量合成了。</div>
+      <div style="margin-top:14px"><button class="primary" id="emptyPaste">📋 粘贴剧本导入</button></div>
+    </div>`;
+    $('#emptyPaste')?.addEventListener('click', openImportModal);
+    return;
+  }
+  // 按场景分组，保持插入顺序
+  const groups = [];
+  const idx = {};
+  for (const d of state.dialogues) {
+    const key = d.scene || '';
+    if (!(key in idx)) { idx[key] = groups.length; groups.push({ scene: key, items: [] }); }
+    groups[idx[key]].items.push(d);
+  }
+  list.innerHTML = `<div class="row mb-2">
+      <label style="margin:0"><input type="checkbox" id="selAll"> 全选</label>
+    </div>` + groups.map(g => `
+    <div class="scene-head">📂 ${g.scene ? escapeHtml(g.scene) : '未分组'} · ${g.items.length} 条</div>
+    <table><tbody>${g.items.map(d => dialogueRow(d)).join('')}</tbody></table>
+  `).join('');
+  $('#selAll').addEventListener('change', e =>
+    document.querySelectorAll('.dialogChk').forEach(cb => cb.checked = e.target.checked));
+  list.querySelectorAll('button[data-act]').forEach(b => b.addEventListener('click', () => {
+    const { act, id } = b.dataset;
+    if (act === 'edit') openDialogueForm(state.dialogues.find(x => x.id === id));
+    else if (act === 'del') deleteDialogue(id);
+    else if (act === 'play') new Audio(`/api/synthesis/audio/${id}`).play().catch(e => toast('播放失败', 'error'));
+    else if (act === 'preview') previewDialogue(id, b);
+    else if (act === 'resynth') resynthOne(id, b);
+  }));
+}
+
+function dialogueRow(d) {
+  const name = charName(d.character_id);
+  const status = d.audio_path
+    ? '<span class="status-done">✓ 已合成</span>'
+    : '<span class="status-pending">○ 待合成</span>';
+  const audioActions = d.audio_path
+    ? `<button class="secondary" data-act="play" data-id="${d.id}">▶</button>
+       <button class="secondary" data-act="resynth" data-id="${d.id}">↻ 重合成</button>
+       <a href="/api/synthesis/audio/${d.id}" download><button class="secondary">⬇</button></a>`
+    : `<button class="secondary" data-act="preview" data-id="${d.id}">🔊 试听</button>
+       <button class="secondary" data-act="resynth" data-id="${d.id}">▶ 合成</button>`;
+  return `<tr>
+    <td style="width:28px"><input type="checkbox" class="dialogChk" data-id="${d.id}"></td>
+    <td style="width:130px">${name ? escapeHtml(name) : '<span class="status-error">未指定</span>'}</td>
+    <td style="width:60px"><span class="tag emo-${d.emotion}">${EMOTIONS[d.emotion]}</span></td>
+    <td style="white-space:pre-wrap">${escapeHtml(d.text)}</td>
+    <td style="width:78px">${status}</td>
+    <td style="width:240px"><div class="row">${audioActions}
+      <button class="secondary" data-act="edit" data-id="${d.id}">编辑</button>
+      <button class="danger" data-act="del" data-id="${d.id}">删</button></div></td>
+  </tr>`;
+}
+
+async function previewDialogue(id, btn) {
+  btn.disabled = true; const old = btn.textContent; btn.textContent = '合成中…';
+  try {
+    const res = await fetch(`/api/synthesis/preview/${id}`, { method: 'POST' });
+    if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+    new Audio(URL.createObjectURL(await res.blob())).play();
+  } catch (e) { toast('试听失败：' + e.message, 'error'); }
+  finally { btn.disabled = false; btn.textContent = old; }
+}
+
+async function resynthOne(id, btn) {
+  btn.disabled = true; const old = btn.textContent; btn.textContent = '合成中…';
+  try {
+    const r = await api(`/api/synthesis/one/${id}`, { method: 'POST' });
+    if (r.success) { toast('合成成功', 'success'); await reloadDialogues(); }
+    else toast('合成失败：' + (r.error || ''), 'error');
+  } catch (e) { toast(e.message, 'error'); }
+  finally { btn.disabled = false; btn.textContent = old; }
+}
+
+function dialogueFormHtml(d) {
+  const charOpts = state.characters
+    .map(c => `<option value="${c.id}" ${d?.character_id === c.id ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('');
+  const emoOpts = Object.entries(EMOTIONS)
+    .map(([k, v]) => `<option value="${k}" ${(d?.emotion || 'neutral') === k ? 'selected' : ''}>${v}</option>`).join('');
+  return `
+    <h2 class="mb-3">${d ? '编辑对话' : '新增对话'}</h2>
+    <div class="row mb-2">
+      <div class="field"><label>角色 *</label><select id="dChar"><option value="">-- 选择角色 --</option>${charOpts}</select></div>
+      <div class="field tight" style="min-width:120px"><label>情感</label><select id="dEmotion">${emoOpts}</select></div>
+      <div class="field"><label>场景/对话组</label><input id="dScene" value="${escapeHtml(d?.scene || '')}" placeholder="例：村口初遇"></div>
+    </div>
+    <div class="field mb-2"><label>对话内容 *</label><textarea id="dText" rows="4" placeholder="请输入台词…">${escapeHtml(d?.text || '')}</textarea></div>
+    <div class="field mb-3"><label>导出文件名（可选，留空自动命名）</label><input id="dFilename" value="${escapeHtml(d?.filename || '')}" placeholder="npc_villager_001"></div>
+    ${d ? '<div class="hint">修改台词/情感/角色会使已合成音频失效，需重新合成。</div>' : ''}
+    <div class="row"><span style="flex:1"></span>
+      <button class="secondary" id="dCancel">取消</button>
+      <button class="primary" id="dSave">${d ? '保存' : '创建'}</button>
+    </div>`;
+}
+
+function openDialogueForm(d = null) {
+  if (!state.characters.length) return toast('请先创建角色，或用「粘贴剧本导入」自动建档', 'error');
+  openModal(dialogueFormHtml(d));
+  $('#dCancel').onclick = closeModal;
+  $('#dSave').onclick = async () => {
+    const data = {
+      character_id: $('#dChar').value,
+      emotion: $('#dEmotion').value,
+      scene: $('#dScene').value.trim(),
+      text: $('#dText').value,
+      filename: $('#dFilename').value.trim() || null,
+    };
+    if (!data.character_id) return toast('请选择角色', 'error');
+    if (!data.text.trim()) return toast('请填写对话内容', 'error');
+    try {
+      if (d) await api(`/api/dialogues/${d.id}`, { method: 'PATCH', body: JSON.stringify(data) });
+      else await api('/api/dialogues', { method: 'POST', body: JSON.stringify(data) });
+      await reloadDialogues();
+      closeModal();
+      toast(d ? '已更新' : '已创建', 'success');
+    } catch (e) { toast(e.message, 'error'); }
+  };
+}
+$('#addDialogue').addEventListener('click', () => openDialogueForm());
+async function deleteDialogue(id) {
+  if (!confirm('确定删除该对话？')) return;
+  try { await api(`/api/dialogues/${id}`, { method: 'DELETE' }); await reloadDialogues(); toast('已删除'); }
+  catch (e) { toast(e.message, 'error'); }
+}
+
+/* ================= 剧本导入 ================= */
+const SCRIPT_PLACEHOLDER =
+`村长: 欢迎来到我们的村庄，旅行者。
+村长: （担忧）最近这里不太平啊。
+旅行者: 发生了什么事？
+村长(平静): 北边的森林里出现了怪物。
+铁匠: （愤怒）那些怪物毁了我半个铺子！
+# 以 # 或 // 开头的是注释，会被跳过
+铁匠: 你要是能帮忙，这把剑就归你。`;
+
+function previewScreenplay(text) {
+  const speakers = new Set();
+  let lines = 0, lastHad = false;
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#') || line.startsWith('//')) continue;
+    const cands = [line.indexOf(':'), line.indexOf('：')].filter(i => i >= 0);
+    if (cands.length) {
+      let name = line.slice(0, Math.min(...cands)).trim().replace(/[（(].+?[）)]\s*$/, '').trim();
+      if (name) { speakers.add(name); lastHad = true; lines++; }
+    } else if (lastHad) { lines++; }
+  }
+  return { lines, speakers: [...speakers] };
+}
+
+function importModalHtml() {
+  const charOpts = state.characters.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+  const emoOpts = Object.entries(EMOTIONS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('');
+  return `
+    <h2 class="mb-2">粘贴剧本导入</h2>
+    <div class="hint">把策划的多角色剧本文案直接贴进来。每行 <span class="mono">角色名: 台词</span>，
+      可加情感标记 <span class="mono">角色名(愤怒): …</span> 或 <span class="mono">角色名: (愤怒)…</span>。
+      未登记的角色会用默认音色自动建档。</div>
+    <div class="row mb-2">
+      <div class="field tight" style="min-width:180px"><label>格式</label><select id="impFormat">
+        <option value="screenplay">剧本（角色名: 台词）</option>
+        <option value="csv">CSV（角色,情感,文本[,文件名]）</option>
+        <option value="json">JSON 数组</option>
+        <option value="lines">纯文本（单角色，每行一句）</option>
+      </select></div>
+      <div class="field"><label>场景/对话组名</label><input id="impScene" placeholder="例：村口初遇（留空则不分组）"></div>
+      <div class="field tight" style="min-width:110px"><label>默认情感</label><select id="impDefaultEmo">${emoOpts}</select></div>
+    </div>
+    <div class="row mb-2">
+      <div class="field" id="impDefaultCharWrap" style="display:none"><label>默认角色（CSV未识别/纯文本用）</label>
+        <select id="impDefaultChar"><option value="">-- 不指定 --</option>${charOpts}</select></div>
+      <div class="field tight"><label>自动建档</label>
+        <label style="text-transform:none"><input type="checkbox" id="impAutoCreate" checked> 未登记角色自动创建</label></div>
+      <div class="field tight"><label>从文件加载</label><input type="file" id="impFile" accept=".txt,.csv,.json"></div>
+    </div>
+    <div class="field mb-2"><label>剧本内容</label>
+      <textarea id="impData" rows="11" placeholder="${escapeHtml(SCRIPT_PLACEHOLDER)}"></textarea></div>
+    <div class="hint" id="impPreview">识别中…</div>
+    <div class="row"><span style="flex:1"></span>
+      <button class="secondary" id="impCancel">取消</button>
+      <button class="primary" id="impDo">导入</button>
+    </div>`;
+}
+
+function openImportModal() {
+  openModal(importModalHtml());
+  const fmt = $('#impFormat'), data = $('#impData');
+  const syncFmtUi = () => {
+    $('#impDefaultCharWrap').style.display = (fmt.value === 'lines' || fmt.value === 'csv') ? '' : 'none';
+  };
+  const syncPreview = () => {
+    if (fmt.value !== 'screenplay') { $('#impPreview').textContent = '非剧本格式：将按所选格式解析。'; return; }
+    const r = previewScreenplay(data.value);
+    $('#impPreview').textContent = data.value.trim()
+      ? `将导入约 ${r.lines} 条对话，识别到 ${r.speakers.length} 个角色：${r.speakers.join('、') || '（无）'}`
+      : '在上方粘贴剧本，这里会实时显示识别结果。';
+  };
+  fmt.addEventListener('change', () => { syncFmtUi(); syncPreview(); });
+  data.addEventListener('input', syncPreview);
+  syncFmtUi(); syncPreview();
+  $('#impFile').addEventListener('change', async e => {
+    const f = e.target.files[0]; if (!f) return;
+    data.value = await f.text();
+    if (f.name.endsWith('.json')) fmt.value = 'json';
+    else if (f.name.endsWith('.csv')) fmt.value = 'csv';
+    syncFmtUi(); syncPreview();
+  });
+  $('#impCancel').onclick = closeModal;
+  $('#impDo').onclick = async () => {
+    if (!data.value.trim()) return toast('内容为空', 'error');
+    const fd = new FormData();
+    fd.append('format', fmt.value);
+    fd.append('content', data.value);
+    fd.append('scene', $('#impScene').value.trim());
+    fd.append('default_emotion', $('#impDefaultEmo').value);
+    fd.append('default_character_id', $('#impDefaultChar')?.value || '');
+    fd.append('auto_create', $('#impAutoCreate').checked ? 'true' : 'false');
+    $('#impDo').disabled = true;
+    try {
+      const res = await fetch('/api/dialogues/import', { method: 'POST', body: fd });
+      if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+      const j = await res.json();
+      await reloadCharacters();
+      await reloadDialogues();
+      closeModal();
+      const created = (j.created_characters || []);
+      toast(`导入 ${j.imported} 条对话` + (created.length ? `，新建角色：${created.join('、')}` : ''), 'success', 5000);
+      if (created.length) toast('新角色用了默认音色，记得到「角色配置」调整', 'info', 6000);
+    } catch (e) { toast('导入失败：' + e.message, 'error'); }
+    finally { $('#impDo').disabled = false; }
+  };
+}
+$('#pasteScript').addEventListener('click', openImportModal);
+
+/* ================= 批量合成 / 取消 / 导出 ================= */
+function setGenRunning(running) {
+  const btn = $('#startGen');
+  btn.textContent = running ? '■ 取消合成' : '▶ 开始合成';
+  btn.className = running ? 'warn' : 'primary';
+  $('#exportZip').disabled = running;
+  $('#genScope').disabled = running;
+}
+
+function selectedIds() {
+  return [...document.querySelectorAll('.dialogChk:checked')].map(cb => cb.dataset.id);
+}
+
+$('#startGen').addEventListener('click', async () => {
+  if (synthController) { synthController.abort(); return; }
+  const scope = $('#genScope').value;
+  let dialogue_ids = [];
+  if (scope === 'selected') {
+    dialogue_ids = selectedIds();
+    if (!dialogue_ids.length) return toast('请先在列表中勾选对话', 'error');
+  }
+  synthController = new AbortController();
+  setGenRunning(true);
+  $('#progBar').style.width = '0%';
+  $('#genStatus').textContent = '正在请求合成…';
+  let total = 0, done = 0, ok = 0, fail = 0;
+  try {
+    const resp = await fetch('/api/synthesis/batch/stream', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope, dialogue_ids }), signal: synthController.signal,
+    });
+    if (!resp.ok) throw new Error((await resp.json()).detail || resp.statusText);
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { value, done: streamDone } = await reader.read();
+      if (streamDone) break;
+      buf += decoder.decode(value, { stream: true });
+      const parts = buf.split('\n\n'); buf = parts.pop();
+      for (const ev of parts) {
+        const m = ev.match(/^data: (.+)$/m);
+        if (!m) continue;
+        const d = JSON.parse(m[1]);
+        if (d.phase === 'start') {
+          total = d.total;
+          $('#genStatus').textContent = total ? `共 ${total} 条待合成…` : '没有符合范围的对话。';
+        } else if (d.phase === 'progress') {
+          done = d.index;
+          const r = d.result;
+          if (r.success) ok++; else fail++;
+          $('#progBar').style.width = (done / total * 100) + '%';
+          const dlg = state.dialogues.find(x => x.id === r.dialogue_id);
+          const who = dlg ? (charName(dlg.character_id) || '?') : '?';
+          const snippet = dlg ? dlg.text.slice(0, 16) : '';
+          $('#genStatus').textContent =
+            `合成中 ${done}/${total} · 成功 ${ok} 失败 ${fail} · 当前：${who}「${snippet}」` +
+            (r.success ? '' : ` · ✗ ${r.error || ''}`);
+        } else if (d.phase === 'done') {
+          $('#progBar').style.width = '100%';
+        }
+      }
+    }
+    $('#genStatus').textContent = `完成 · 成功 ${ok} · 失败 ${fail}` + (total ? '' : '（无可合成对话）');
+    if (total) toast(`合成完成：成功 ${ok} / ${total}`, fail ? 'error' : 'success');
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      $('#genStatus').textContent = `已取消 · 已完成 ${done}/${total}（已合成的部分已保存）`;
+      toast('已取消合成', 'info');
+    } else {
+      $('#genStatus').textContent = '失败：' + e.message;
+      toast('合成失败：' + e.message, 'error');
+    }
+  } finally {
+    synthController = null;
+    setGenRunning(false);
+    await reloadDialogues();
+  }
+});
+
+$('#exportZip').addEventListener('click', async () => {
+  const scope = $('#genScope').value;
+  let dialogue_ids = [];
+  if (scope === 'selected') {
+    dialogue_ids = selectedIds();
+    if (!dialogue_ids.length) return toast('请先勾选要导出的对话', 'error');
+  }
+  $('#exportZip').disabled = true;
+  try {
+    const res = await fetch('/api/synthesis/export', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope, dialogue_ids }),
+    });
+    if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'npc_voices.zip';
+    a.click();
+    toast('已导出 ZIP（按场景/角色分目录，附 manifest.json）', 'success', 4000);
+  } catch (e) { toast('导出失败：' + e.message, 'error'); }
+  finally { $('#exportZip').disabled = false; }
+});
+
+/* ================= init ================= */
+(async () => {
+  try { state.voices = await api('/api/characters/voices/available'); }
+  catch (e) { state.voices = []; toast('音色列表加载失败，可稍后在角色编辑里重试', 'error'); }
+  await reloadCharacters();
+  await reloadDialogues();
+})();
+</script>
+</body>
+</html>
