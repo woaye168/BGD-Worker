@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    name: 冒烟测试 (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: 同步依赖
+        run: uv sync --no-dev
+
+      - name: 构建 app 并校验关键路由
+        run: |
+          uv run python - <<'PY'
+          from api.app import create_app
+          app = create_app()
+          paths = sorted({getattr(r, "path", "") for r in app.routes})
+          required = [
+              "/api/characters",
+              "/api/characters/audition",
+              "/api/dialogues/import",
+              "/api/synthesis/batch/stream",
+              "/api/synthesis/export",
+          ]
+          for need in required:
+              assert need in paths, f"缺少路由: {need}"
+          print(f"app 构建成功，{len(paths)} 条路由，关键路由齐全")
+          PY
+
+      - name: 校验各层模块导入
+        run: |
+          uv run python - <<'PY'
+          import importlib
+          mods = [
+              "contract.models", "contract.config", "contract.ports", "contract.errors",
+              "character.service", "dialogue.service", "dialogue.importer",
+              "synthesis.orchestrator", "synthesis.emotion_mapper", "synthesis.exporter",
+              "storage.json_repository", "storage.audio_store",
+              "tts.edge_tts_engine", "api.deps", "api.app",
+          ]
+          for m in mods:
+              importlib.import_module(m)
+          print(f"{len(mods)} 个分层模块导入 OK")
+          PY
+
+      - name: 校验剧本解析逻辑
+        run: |
+          uv run python - <<'PY'
+          from dialogue.importer import parse_screenplay
+          script = "村长: 欢迎来到村庄。\n村长(愤怒): 你竟敢偷东西！\n旅行者: (惊讶)我什么都没拿！"
+          ids = {}
+          def resolver(name):
+              return ids.setdefault(name, f"id_{len(ids)}")
+          out = parse_screenplay(script, resolver, scene="测试场景")
+          assert len(out) == 3, f"应解析 3 条，实际 {len(out)}"
+          assert len(ids) == 2, f"应识别 2 个角色，实际 {len(ids)}"
+          assert out[1].emotion.value == "angry", out[1].emotion
+          assert out[2].emotion.value == "surprise", out[2].emotion
+          assert all(d.scene == "测试场景" for d in out)
+          print("剧本解析逻辑校验通过")
+          PY
+
+      - name: 启动服务探活
+        run: |
+          uv run python -m uvicorn main:app --host 127.0.0.1 --port 8000 &
+          pid=$!
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8000/api/characters >/dev/null && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:8000/api/characters
+          curl -sf -o /dev/null -w 'index.html -> HTTP %{http_code}\n' http://127.0.0.1:8000/
+          kill $pid
+
+  build:
+    name: 打包 (${{ matrix.os }})
+    needs: smoke
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: 同步依赖（含 dev）
+        run: uv sync
+
+      - name: PyInstaller 打包
+        run: uv run python build.py
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: NPC-Voice-Gen-${{ matrix.os }}
+          path: dist/
+          if-no-files-found: error

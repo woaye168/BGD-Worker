@@ -5,11 +5,13 @@
 # @depends:
 #   - os, sys, pathlib (stdlib)
 #   - PyInstaller (dev 依赖)
+#   - imageio_ffmpeg (运行时依赖，用于定位静态 ffmpeg 二进制)
 # @invariants:
 #   - 入口固定为 desktop.py；产物名 NPC-Voice-Gen，置于 dist/
 #   - web/ 前端目录与 imageio-ffmpeg 静态二进制必须随包，否则冻结后前端/转码不可用
+#   - 打包前先调用 get_ffmpeg_exe() 物化 ffmpeg 二进制，确保 --collect-all 能收集到
 #   - --add-data 分隔符随平台：Windows 用 ';'，其他用 ':'
-#   - 沙箱无法验证：需在目标 OS（Win/Mac）本机执行 `uv run python build.py`
+#   - 由 .github/workflows/ci.yml 在 windows/macos runner 上真实验证
 
 import os
 import sys
@@ -20,6 +22,12 @@ ROOT = Path(__file__).resolve().parent
 
 def build() -> None:
     import PyInstaller.__main__
+
+    try:
+        import imageio_ffmpeg
+        print("imageio-ffmpeg 二进制:", imageio_ffmpeg.get_ffmpeg_exe())
+    except Exception as e:  # noqa: BLE001 - 仅诊断，缺失由 --collect-all 兜底
+        print(f"警告: 无法定位 imageio-ffmpeg 二进制: {e}", file=sys.stderr)
 
     sep = ";" if os.name == "nt" else ":"
     args = [
@@ -39,12 +47,12 @@ def build() -> None:
     ]
     print("PyInstaller args:", " ".join(args))
     PyInstaller.__main__.run(args)
-    print("\n构建完成 → dist/NPC-Voice-Gen/")
+    print("\n构建完成 → dist/")
 
 
 if __name__ == "__main__":
     try:
         build()
-    except ImportError:
-        print("缺少 PyInstaller，请先执行：uv sync --all-extras", file=sys.stderr)
+    except ImportError as e:
+        print(f"缺少打包依赖（{e}），请先执行：uv sync", file=sys.stderr)
         sys.exit(1)
