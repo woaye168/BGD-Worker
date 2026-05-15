@@ -2,15 +2,17 @@
 # @layer: adapter
 # @contract:
 #   - JSONCharacterRepository(path).{list, get, upsert, delete}
-#   - JSONDialogueRepository(path).{list, get, upsert, delete, bulk_add}
+#   - JSONDialogueRepository(path).{list, get, upsert, delete, bulk_add, reorder}
 # @depends:
 #   - json, threading, pathlib (stdlib)
 #   - ../contract/models.py: Character, Dialogue
+#   - ../contract/errors.py: StorageError
 # @invariants:
 #   - 写入采用 write-temp + replace 原子模式，崩溃不会半写
 #   - 同一进程内使用 RLock 串行化读写；跨进程并发不安全（单机工具场景可接受）
 #   - 文件不存在则初始化为空数组 "[]"；datetime 通过 default=str 序列化为 ISO 字符串
 #   - JSON 文件结构是 list[dict]，每条记录用 model_dump(mode='json') 序列化
+#   - reorder 要求 ids 集合与现有对话 id 集合完全相同，否则抛 StorageError（防止误传丢数据）
 
 from __future__ import annotations
 
@@ -19,6 +21,7 @@ import threading
 from pathlib import Path
 from typing import Optional
 
+from contract.errors import StorageError
 from contract.models import Character, Dialogue
 
 
@@ -112,3 +115,11 @@ class JSONDialogueRepository(_JSONFileBase):
             rows = self._read()
             rows.extend(d.model_dump(mode="json") for d in dialogues)
             self._write(rows)
+
+    def reorder(self, ids: list[str]) -> None:
+        with self._lock:
+            rows = self._read()
+            by_id = {r.get("id"): r for r in rows}
+            if set(ids) != set(by_id.keys()):
+                raise StorageError("reorder ids 必须与现有对话 id 集合完全相同")
+            self._write([by_id[i] for i in ids])

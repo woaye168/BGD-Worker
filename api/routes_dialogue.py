@@ -7,11 +7,13 @@
 #   - GET    /api/dialogues/{id}
 #   - PATCH  /api/dialogues/{id}
 #   - DELETE /api/dialogues/{id}
-#   - POST   /api/dialogues/import (multipart)
+#   - POST   /api/dialogues/import     (multipart)
+#   - POST   /api/dialogues/reorder    (body: {ids: [...]} 完整全量顺序)
+#   - POST   /api/dialogues/bulk-patch (body: {ids: [...], patch: {...}})
 # @depends:
 #   - fastapi (APIRouter, Depends, Form, File, UploadFile, HTTPException)
 #   - ../contract/models.py: Dialogue, Emotion
-#   - ../contract/errors.py: NotFoundError, ValidationError
+#   - ../contract/errors.py: NotFoundError, ValidationError, StorageError
 #   - ../dialogue/service.py, ../dialogue/importer.py
 #   - ../character/service.py: CharacterService
 #   - ./deps.py
@@ -20,13 +22,14 @@
 #   - format 取值：screenplay | csv | json | lines；其他值返回 400
 #   - auto_create=True 时未知角色名自动建档（默认音色），实现"粘贴剧本即生成"的核心流程
 #   - scene 表单字段统一写入本批所有对话的 Dialogue.scene
+#   - reorder 要求传入的 ids 是当前全部对话的一个排列；bulk-patch 仅允许改 scene/emotion/character_id/filename
 
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from character.service import CharacterService
-from contract.errors import NotFoundError, ValidationError
+from contract.errors import NotFoundError, StorageError, ValidationError
 from contract.models import Dialogue, Emotion
 from dialogue import importer
 from dialogue.service import DialogueService
@@ -130,3 +133,24 @@ def delete_dialogue(id: str, svc: DialogueService = Depends(get_dialogue_service
         return {"ok": True}
     except NotFoundError as e:
         raise HTTPException(404, str(e))
+
+
+@router.post("/reorder")
+def reorder_dialogues(data: dict, svc: DialogueService = Depends(get_dialogue_service)):
+    ids = data.get("ids")
+    if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+        raise HTTPException(400, "ids must be a list of dialogue id strings")
+    try:
+        svc.reorder(ids)
+    except StorageError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "count": len(ids)}
+
+
+@router.post("/bulk-patch")
+def bulk_patch_dialogues(data: dict, svc: DialogueService = Depends(get_dialogue_service)):
+    ids = data.get("ids") or []
+    patch = data.get("patch") or {}
+    if not isinstance(ids, list) or not isinstance(patch, dict):
+        raise HTTPException(400, "ids:list and patch:dict required")
+    return {"updated": svc.bulk_patch(ids, patch)}

@@ -3,7 +3,7 @@
 # @contract:
 #   - TTSEngine.{output_extension, synthesize, list_voices}
 #   - CharacterRepository.{list, get, upsert, delete}
-#   - DialogueRepository.{list, get, upsert, delete, bulk_add}
+#   - DialogueRepository.{list, get, upsert, delete, bulk_add, reorder}
 #   - AudioStore.{save, open, exists, delete, absolute}
 # @depends:
 #   - typing (Protocol)
@@ -14,6 +14,7 @@
 #   - TTSEngine.synthesize 返回完整音频字节流（含容器头），格式由 output_extension 声明
 #   - TTSEngine.output_extension 取值与 TTSSettings.output_format 一致（ogg/mp3/wav），编排层据此命名文件
 #   - AudioStore.save 返回的字符串是相对 audio_dir.parent 的可读路径，可直接持久化到 Dialogue.audio_path
+#   - DialogueRepository.reorder 的 ids 必须是仓储内全部对话 id 的一个排列；不匹配时实现应抛 StorageError
 #   - 仓储实现可同步（当前 JSON 文件实现即同步），编排层不假定异步
 
 from __future__ import annotations
@@ -57,6 +58,7 @@ class DialogueRepository(Protocol):
     def upsert(self, dialogue: Dialogue) -> None: ...
     def delete(self, id: str) -> bool: ...
     def bulk_add(self, dialogues: list[Dialogue]) -> None: ...
+    def reorder(self, ids: list[str]) -> None: ...
 
 
 @runtime_checkable

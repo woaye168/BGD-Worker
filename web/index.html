@@ -46,7 +46,10 @@ label { font-size: 11px; color: #8b949e; display: block; margin-bottom: 4px; tex
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 8px 8px; border-bottom: 1px solid #21262d; font-size: 13px; vertical-align: middle; }
 th { color: #8b949e; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
-.scene-head { background: #1c2333; color: #58a6ff; font-size: 12px; padding: 7px 10px; border-radius: 5px; margin: 14px 0 6px; font-weight: 600; }
+.scene-head { background: #1c2333; color: #58a6ff; font-size: 12px; padding: 7px 10px; border-radius: 5px; margin: 14px 0 6px;
+  font-weight: 600; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.scene-head.playing { background: #1f3a5c; box-shadow: 0 0 0 2px #1f6feb; }
+.scene-actions { display: flex; gap: 6px; }
 .empty { text-align: center; padding: 48px 20px; color: #6e7681; }
 .empty h3 { color: #c9d1d9; font-size: 15px; margin-bottom: 6px; }
 .progress { background: #21262d; height: 7px; border-radius: 4px; overflow: hidden; margin: 10px 0 6px; }
@@ -61,6 +64,22 @@ audio { vertical-align: middle; height: 30px; }
 .mono { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
 .mb-2 { margin-bottom: 10px; } .mb-3 { margin-bottom: 14px; }
 .muted { color: #6e7681; font-size: 12px; }
+/* 拖拽 */
+tr[draggable="true"] { cursor: grab; }
+tr[draggable="true"]:active { cursor: grabbing; }
+tr.drag-source td { opacity: 0.35; }
+tr.drag-over-top td { box-shadow: inset 0 2px 0 #1f6feb; }
+tr.drag-over-bottom td { box-shadow: inset 0 -2px 0 #1f6feb; }
+.drag-handle { color: #6e7681; user-select: none; padding: 0 4px; }
+/* 搜索栏 + 批量工具栏 */
+.search-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
+.search-bar input { flex: 1; }
+.row-playing td { background: #1f3a5c44; }
+.toolbar-bulk { position: sticky; bottom: 10px; background: #1c2333; border: 1px solid #1f6feb; border-radius: 6px;
+  padding: 12px 14px; margin-top: 14px; display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; z-index: 5;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.4); }
+.toolbar-bulk strong { color: #58a6ff; font-size: 14px; padding-bottom: 4px; }
+.toolbar-bulk .field { min-width: 100px; }
 </style>
 </head>
 <body>
@@ -139,8 +158,16 @@ audio { vertical-align: middle; height: 30px; }
 const EMOTIONS = { neutral:'中性', happy:'开心', sad:'悲伤', angry:'愤怒', surprise:'惊讶', fear:'害怕', calm:'平静' };
 const LANG_PRIORITY = ['zh-CN','zh-TW','zh-HK','en-US','en-GB','ja-JP','ko-KR'];
 
-const state = { characters: [], dialogues: [], voices: [] };
+const state = {
+  characters: [],
+  dialogues: [],
+  voices: [],
+  selectedIds: new Set(),
+  search: '',
+  dragSrcId: null,
+};
 let synthController = null;
+let playback = null;  // { audio, cancelled, sceneKey }
 
 const $ = s => document.querySelector(s);
 const escapeHtml = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
@@ -165,6 +192,19 @@ function toast(msg, type = 'info', ms = 3000) {
   t.textContent = msg;
   document.body.appendChild(t);
   setTimeout(() => t.remove(), ms);
+}
+
+// 通用 blob 保存：必须 append-to-body 才能在 pywebview 内嵌 webview 触发下载
+function saveBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
 
 function openModal(html) { $('#modalContent').innerHTML = html; $('#modal').classList.add('show'); }
@@ -345,8 +385,22 @@ $('#addCharacter').addEventListener('click', () => openCharacterForm());
 /* ================= 对话 ================= */
 async function reloadDialogues() {
   state.dialogues = await api('/api/dialogues');
+  // 清理被删除项的选中态
+  const live = new Set(state.dialogues.map(d => d.id));
+  for (const id of [...state.selectedIds]) if (!live.has(id)) state.selectedIds.delete(id);
   renderDialogues();
   updateSummary();
+}
+
+function visibleDialogues() {
+  const s = state.search.trim().toLowerCase();
+  if (!s) return state.dialogues;
+  return state.dialogues.filter(d => {
+    const c = (charName(d.character_id) || '').toLowerCase();
+    return d.text.toLowerCase().includes(s)
+      || c.includes(s)
+      || (d.scene || '').toLowerCase().includes(s);
+  });
 }
 
 function renderDialogues() {
@@ -361,45 +415,68 @@ function renderDialogues() {
     $('#emptyPaste')?.addEventListener('click', openImportModal);
     return;
   }
-  // 按场景分组，保持插入顺序
-  const groups = [];
-  const idx = {};
-  for (const d of state.dialogues) {
-    const key = d.scene || '';
-    if (!(key in idx)) { idx[key] = groups.length; groups.push({ scene: key, items: [] }); }
-    groups[idx[key]].items.push(d);
+
+  const visible = visibleDialogues();
+  const searchHtml = `<div class="search-bar">
+    <input id="dlgSearch" placeholder="🔍 搜索台词/角色/场景..." value="${escapeHtml(state.search)}">
+    <span class="muted">${visible.length}/${state.dialogues.length} 条可见</span>
+  </div>`;
+
+  if (!visible.length) {
+    list.innerHTML = searchHtml + '<div class="empty"><h3>没有匹配结果</h3><div>清空搜索框查看全部对话。</div></div>';
+    bindSearch();
+    return;
   }
-  list.innerHTML = `<div class="row mb-2">
-      <label style="margin:0"><input type="checkbox" id="selAll"> 全选</label>
-    </div>` + groups.map(g => `
-    <div class="scene-head">📂 ${g.scene ? escapeHtml(g.scene) : '未分组'} · ${g.items.length} 条</div>
-    <table><tbody>${g.items.map(d => dialogueRow(d)).join('')}</tbody></table>
+
+  // 按场景分组（保持 state.dialogues 当前的存储顺序）
+  const groups = [];
+  const gIdx = {};
+  for (const d of visible) {
+    const key = d.scene || '';
+    if (!(key in gIdx)) { gIdx[key] = groups.length; groups.push({ scene: key, items: [] }); }
+    groups[gIdx[key]].items.push(d);
+  }
+
+  const allVisibleSelected = visible.every(d => state.selectedIds.has(d.id));
+  const selAllHtml = `<div class="row mb-2">
+    <label style="margin:0;text-transform:none"><input type="checkbox" id="selAll" ${allVisibleSelected?'checked':''}> 全选可见 ${visible.length} 条</label>
+    <span class="muted">提示：同场景内可拖动行调整顺序</span>
+  </div>`;
+
+  const groupsHtml = groups.map(g => `
+    <div class="scene-head" data-scene="${escapeHtml(g.scene)}">
+      <span>📂 ${g.scene ? escapeHtml(g.scene) : '未分组'} · ${g.items.length} 条</span>
+      <span class="scene-actions">
+        <button class="secondary" data-act="play-scene" data-scene="${escapeHtml(g.scene)}">▶ 连播本场景</button>
+      </span>
+    </div>
+    <table><tbody class="scene-body" data-scene="${escapeHtml(g.scene)}">
+      ${g.items.map(d => dialogueRow(d)).join('')}
+    </tbody></table>
   `).join('');
-  $('#selAll').addEventListener('change', e =>
-    document.querySelectorAll('.dialogChk').forEach(cb => cb.checked = e.target.checked));
-  list.querySelectorAll('button[data-act]').forEach(b => b.addEventListener('click', () => {
-    const { act, id } = b.dataset;
-    if (act === 'edit') openDialogueForm(state.dialogues.find(x => x.id === id));
-    else if (act === 'del') deleteDialogue(id);
-    else if (act === 'play') new Audio(`/api/synthesis/audio/${id}`).play().catch(e => toast('播放失败', 'error'));
-    else if (act === 'preview') previewDialogue(id, b);
-    else if (act === 'resynth') resynthOne(id, b);
-  }));
+
+  list.innerHTML = searchHtml + selAllHtml + groupsHtml + `<div id="bulkToolbar"></div>`;
+  bindSearch();
+  bindRowEvents();
+  bindDragHandlers();
+  updateBulkToolbar();
 }
 
 function dialogueRow(d) {
   const name = charName(d.character_id);
+  const checked = state.selectedIds.has(d.id) ? 'checked' : '';
   const status = d.audio_path
     ? '<span class="status-done">✓ 已合成</span>'
     : '<span class="status-pending">○ 待合成</span>';
   const audioActions = d.audio_path
-    ? `<button class="secondary" data-act="play" data-id="${d.id}">▶</button>
-       <button class="secondary" data-act="resynth" data-id="${d.id}">↻ 重合成</button>
-       <a href="/api/synthesis/audio/${d.id}" download><button class="secondary">⬇</button></a>`
+    ? `<button class="secondary" data-act="play" data-id="${d.id}" title="试听">▶</button>
+       <button class="secondary" data-act="resynth" data-id="${d.id}" title="重新合成">↻</button>
+       <button class="secondary" data-act="download" data-id="${d.id}" title="下载">⬇</button>`
     : `<button class="secondary" data-act="preview" data-id="${d.id}">🔊 试听</button>
        <button class="secondary" data-act="resynth" data-id="${d.id}">▶ 合成</button>`;
-  return `<tr>
-    <td style="width:28px"><input type="checkbox" class="dialogChk" data-id="${d.id}"></td>
+  return `<tr draggable="true" data-id="${d.id}" data-scene="${escapeHtml(d.scene||'')}">
+    <td style="width:24px" class="drag-handle" title="拖动调整顺序">⋮⋮</td>
+    <td style="width:28px"><input type="checkbox" class="dialogChk" data-id="${d.id}" ${checked}></td>
     <td style="width:130px">${name ? escapeHtml(name) : '<span class="status-error">未指定</span>'}</td>
     <td style="width:60px"><span class="tag emo-${d.emotion}">${EMOTIONS[d.emotion]}</span></td>
     <td style="white-space:pre-wrap">${escapeHtml(d.text)}</td>
@@ -409,6 +486,47 @@ function dialogueRow(d) {
       <button class="danger" data-act="del" data-id="${d.id}">删</button></div></td>
   </tr>`;
 }
+
+function bindSearch() {
+  const inp = $('#dlgSearch');
+  if (!inp) return;
+  inp.addEventListener('input', () => {
+    state.search = inp.value;
+    const caret = inp.selectionStart;
+    renderDialogues();
+    const ni = $('#dlgSearch');
+    if (ni) { ni.focus(); try { ni.setSelectionRange(caret, caret); } catch (e) {} }
+  });
+}
+
+function bindRowEvents() {
+  const list = $('#dialogueList');
+  list.querySelectorAll('.dialogChk').forEach(cb => cb.addEventListener('change', e => {
+    if (e.target.checked) state.selectedIds.add(e.target.dataset.id);
+    else state.selectedIds.delete(e.target.dataset.id);
+    updateBulkToolbar();
+  }));
+  const selAll = $('#selAll');
+  if (selAll) selAll.addEventListener('change', e => {
+    visibleDialogues().forEach(d => {
+      if (e.target.checked) state.selectedIds.add(d.id);
+      else state.selectedIds.delete(d.id);
+    });
+    renderDialogues();
+  });
+  list.querySelectorAll('button[data-act]').forEach(b => b.addEventListener('click', () => {
+    const { act, id, scene } = b.dataset;
+    if (act === 'edit') openDialogueForm(state.dialogues.find(x => x.id === id));
+    else if (act === 'del') deleteDialogue(id);
+    else if (act === 'play') new Audio(`/api/synthesis/audio/${id}`).play().catch(() => toast('播放失败', 'error'));
+    else if (act === 'preview') previewDialogue(id, b);
+    else if (act === 'resynth') resynthOne(id, b);
+    else if (act === 'download') downloadDialogue(id, b);
+    else if (act === 'play-scene') playScene(scene, b);
+  }));
+}
+
+function selectedIds() { return [...state.selectedIds]; }
 
 async function previewDialogue(id, btn) {
   btn.disabled = true; const old = btn.textContent; btn.textContent = '合成中…';
@@ -430,6 +548,194 @@ async function resynthOne(id, btn) {
   finally { btn.disabled = false; btn.textContent = old; }
 }
 
+async function downloadDialogue(id, btn) {
+  const d = state.dialogues.find(x => x.id === id);
+  if (!d?.audio_path) return toast('该对话尚未合成', 'error');
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/api/synthesis/audio/${id}`);
+    if (!res.ok) throw new Error((await res.text()) || res.statusText);
+    const ext = d.audio_path.split('.').pop() || 'bin';
+    saveBlob(await res.blob(), `${d.filename || id}.${ext}`);
+    toast('已下载', 'success', 1500);
+  } catch (e) { toast('下载失败：' + e.message, 'error'); }
+  finally { btn.disabled = false; }
+}
+
+/* ============ 拖拽重排 ============ */
+function bindDragHandlers() {
+  const list = $('#dialogueList');
+  list.querySelectorAll('tr[draggable="true"]').forEach(tr => {
+    tr.addEventListener('dragstart', e => {
+      state.dragSrcId = tr.dataset.id;
+      tr.classList.add('drag-source');
+      e.dataTransfer.effectAllowed = 'move';
+      try { e.dataTransfer.setData('text/plain', tr.dataset.id); } catch (_) {}
+    });
+    tr.addEventListener('dragend', () => {
+      tr.classList.remove('drag-source');
+      list.querySelectorAll('.drag-over-top, .drag-over-bottom')
+        .forEach(el => el.classList.remove('drag-over-top','drag-over-bottom'));
+      state.dragSrcId = null;
+    });
+    tr.addEventListener('dragover', e => {
+      if (!state.dragSrcId || tr.dataset.id === state.dragSrcId) return;
+      // 只允许同场景内拖动
+      const srcTr = list.querySelector(`tr[data-id="${state.dragSrcId}"]`);
+      if (!srcTr || srcTr.parentElement !== tr.parentElement) return;
+      e.preventDefault();
+      const rect = tr.getBoundingClientRect();
+      const before = e.clientY < rect.top + rect.height / 2;
+      tr.classList.remove('drag-over-top','drag-over-bottom');
+      tr.classList.add(before ? 'drag-over-top' : 'drag-over-bottom');
+    });
+    tr.addEventListener('dragleave', () => {
+      tr.classList.remove('drag-over-top','drag-over-bottom');
+    });
+    tr.addEventListener('drop', async e => {
+      e.preventDefault();
+      const srcId = state.dragSrcId;
+      const tgtId = tr.dataset.id;
+      if (!srcId || srcId === tgtId) return;
+      const srcTr = list.querySelector(`tr[data-id="${srcId}"]`);
+      if (!srcTr || srcTr.parentElement !== tr.parentElement) {
+        toast('跨场景请用"批量工具栏 → 改场景"', 'info');
+        return;
+      }
+      const before = tr.classList.contains('drag-over-top');
+      tr.classList.remove('drag-over-top','drag-over-bottom');
+      // 在全量列表中重排
+      const srcIdx = state.dialogues.findIndex(d => d.id === srcId);
+      const [moved] = state.dialogues.splice(srcIdx, 1);
+      const tgtIdx = state.dialogues.findIndex(d => d.id === tgtId);
+      state.dialogues.splice(before ? tgtIdx : tgtIdx + 1, 0, moved);
+      renderDialogues();
+      // 持久化到服务端（全量 id 序列）
+      try {
+        await api('/api/dialogues/reorder', {
+          method: 'POST',
+          body: JSON.stringify({ ids: state.dialogues.map(d => d.id) }),
+        });
+      } catch (e) {
+        toast('保存顺序失败：' + e.message, 'error');
+        await reloadDialogues();
+      }
+    });
+  });
+}
+
+/* ============ 场景连贯试听 ============ */
+async function playScene(sceneKey, btn) {
+  if (playback) {
+    playback.cancelled = true;
+    try { playback.audio.pause(); } catch (_) {}
+    playback = null;
+    if (btn) btn.textContent = '▶ 连播本场景';
+    document.querySelectorAll('.row-playing').forEach(tr => tr.classList.remove('row-playing'));
+    document.querySelectorAll('.scene-head.playing').forEach(h => h.classList.remove('playing'));
+    toast('已停止连播');
+    return;
+  }
+  const items = state.dialogues.filter(d => (d.scene || '') === sceneKey && d.audio_path);
+  const skipped = state.dialogues.filter(d => (d.scene || '') === sceneKey && !d.audio_path).length;
+  if (!items.length) return toast('本场景没有已合成的音频可连播', 'error');
+
+  const ctx = { audio: new Audio(), cancelled: false, sceneKey };
+  playback = ctx;
+  if (btn) btn.textContent = '⏹ 停止连播';
+  const head = document.querySelector(`.scene-head[data-scene="${CSS.escape(sceneKey)}"]`);
+  if (head) head.classList.add('playing');
+
+  for (let i = 0; i < items.length; i++) {
+    if (ctx.cancelled) break;
+    const d = items[i];
+    const row = document.querySelector(`tr[data-id="${d.id}"]`);
+    if (row) row.classList.add('row-playing');
+    ctx.audio.src = `/api/synthesis/audio/${d.id}`;
+    await new Promise(resolve => {
+      ctx.audio.onended = resolve;
+      ctx.audio.onerror = resolve;
+      ctx.audio.play().catch(resolve);
+    });
+    if (row) row.classList.remove('row-playing');
+  }
+  if (head) head.classList.remove('playing');
+  if (btn) btn.textContent = '▶ 连播本场景';
+  if (!ctx.cancelled) {
+    toast(`连播完成 ${items.length} 条` + (skipped ? `（跳过 ${skipped} 条未合成）` : ''), 'success');
+  }
+  if (playback === ctx) playback = null;
+}
+
+/* ============ 批量工具栏 ============ */
+function updateBulkToolbar() {
+  const bar = $('#bulkToolbar');
+  if (!bar) return;
+  const n = state.selectedIds.size;
+  if (!n) { bar.innerHTML = ''; return; }
+  const scenes = [...new Set(state.dialogues.map(d => d.scene).filter(Boolean))];
+  const charOpts = state.characters.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+  const emoOpts = Object.entries(EMOTIONS).map(([k,v]) => `<option value="${k}">${v}</option>`).join('');
+  bar.innerHTML = `<div class="toolbar-bulk">
+    <strong>已选 ${n} 条</strong>
+    <div class="field"><label>改场景 (留空=不变)</label>
+      <input id="bulkScene" list="sceneList" placeholder="例：村口初遇" value="">
+      <datalist id="sceneList">${scenes.map(s => `<option value="${escapeHtml(s)}">`).join('')}</datalist>
+    </div>
+    <div class="field tight"><label>改情感</label><select id="bulkEmo"><option value="">不变</option>${emoOpts}</select></div>
+    <div class="field tight"><label>改角色</label><select id="bulkChar"><option value="">不变</option>${charOpts}</select></div>
+    <button class="primary" id="bulkApply">应用修改</button>
+    <button class="secondary" id="bulkSynth">合成选中</button>
+    <button class="danger" id="bulkDel">删除选中</button>
+    <button class="secondary" id="bulkClear">清空选择</button>
+  </div>`;
+  $('#bulkApply').onclick = bulkApply;
+  $('#bulkSynth').onclick = bulkSynth;
+  $('#bulkDel').onclick = bulkDelete;
+  $('#bulkClear').onclick = () => { state.selectedIds.clear(); renderDialogues(); };
+}
+
+async function bulkApply() {
+  const patch = {};
+  const sc = $('#bulkScene').value;
+  // 允许传空串显式清空场景，但这里用："不填=不动"
+  if (sc !== '') patch.scene = sc.trim();
+  const emo = $('#bulkEmo').value; if (emo) patch.emotion = emo;
+  const ch = $('#bulkChar').value; if (ch) patch.character_id = ch;
+  if (!Object.keys(patch).length) return toast('未选择任何修改项', 'error');
+  const ids = selectedIds();
+  try {
+    const r = await api('/api/dialogues/bulk-patch', {
+      method: 'POST', body: JSON.stringify({ ids, patch }),
+    });
+    toast(`已更新 ${r.updated}/${ids.length} 条`, 'success');
+    if ('emotion' in patch || 'character_id' in patch) {
+      toast('情感/角色变更会清空对应音频，请重新合成', 'info', 4000);
+    }
+    await reloadDialogues();
+  } catch (e) { toast('批量修改失败：' + e.message, 'error'); }
+}
+
+function bulkSynth() {
+  if (!state.selectedIds.size) return;
+  $('#genScope').value = 'selected';
+  $('#startGen').click();
+}
+
+async function bulkDelete() {
+  const ids = selectedIds();
+  if (!ids.length) return;
+  if (!confirm(`确认删除选中的 ${ids.length} 条对话？此操作不可恢复。`)) return;
+  let ok = 0;
+  for (const id of ids) {
+    try { await api(`/api/dialogues/${id}`, { method: 'DELETE' }); ok++; } catch (_) {}
+  }
+  state.selectedIds.clear();
+  toast(`已删除 ${ok}/${ids.length} 条`, ok === ids.length ? 'success' : 'error');
+  await reloadDialogues();
+}
+
+/* ============ 单条新增/编辑/删除 ============ */
 function dialogueFormHtml(d) {
   const charOpts = state.characters
     .map(c => `<option value="${c.id}" ${d?.character_id === c.id ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('');
@@ -481,7 +787,7 @@ async function deleteDialogue(id) {
   catch (e) { toast(e.message, 'error'); }
 }
 
-/* ================= 剧本导入 ================= */
+/* ============ 剧本导入 ============ */
 const SCRIPT_PLACEHOLDER =
 `村长: 欢迎来到我们的村庄，旅行者。
 村长: （担忧）最近这里不太平啊。
@@ -599,10 +905,6 @@ function setGenRunning(running) {
   $('#genScope').disabled = running;
 }
 
-function selectedIds() {
-  return [...document.querySelectorAll('.dialogChk:checked')].map(cb => cb.dataset.id);
-}
-
 $('#startGen').addEventListener('click', async () => {
   if (synthController) { synthController.abort(); return; }
   const scope = $('#genScope').value;
@@ -685,11 +987,13 @@ $('#exportZip').addEventListener('click', async () => {
     });
     if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
     const blob = await res.blob();
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'npc_voices.zip';
-    a.click();
-    toast('已导出 ZIP（按场景/角色分目录，附 manifest.json）', 'success', 4000);
+    if (blob.size < 200) {
+      // 22 字节空 zip 也算成功但用户体验差，给个提示
+      toast('导出为空：所选范围内没有已合成的音频', 'error');
+      return;
+    }
+    saveBlob(blob, 'npc_voices.zip');
+    toast('已下载 ZIP（按场景/角色分目录，附 manifest.json）', 'success', 4000);
   } catch (e) { toast('导出失败：' + e.message, 'error'); }
   finally { $('#exportZip').disabled = false; }
 });

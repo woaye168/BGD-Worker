@@ -1,7 +1,7 @@
 # @purpose: 对话业务服务（CRUD、合成结果回写、合成失效）
 # @layer: logic
 # @contract:
-#   - DialogueService.{list, get, create, update, delete, bulk_add, mark_synthesized}
+#   - DialogueService.{list, get, create, update, delete, bulk_add, bulk_patch, reorder, mark_synthesized}
 # @depends:
 #   - uuid, datetime (stdlib)
 #   - ../contract/models.py: Dialogue
@@ -11,6 +11,9 @@
 #   - 修改 text/emotion/character_id 任一字段 → 必须清空 audio_path 与 synthesized_at（合成失效）
 #   - 修改 filename 不触发失效（仅影响下次导出文件名）
 #   - mark_synthesized 由 synthesis 编排器在写入音频后调用，唯一允许设置 audio_path 的入口
+#   - bulk_patch 仅允许批量改 {scene, emotion, character_id, filename}；emotion/character_id 改动
+#     会触发对应条目合成失效（与单条 update 一致，复用同一逻辑路径）
+#   - reorder(ids) 不校验集合完整性，由仓储层校验并抛 StorageError
 
 from __future__ import annotations
 
@@ -76,6 +79,23 @@ class DialogueService:
     def bulk_add(self, dialogues: list[Dialogue]) -> int:
         self._repo.bulk_add(dialogues)
         return len(dialogues)
+
+    def bulk_patch(self, ids: list[str], patch: dict) -> int:
+        allowed = {"scene", "emotion", "character_id", "filename"}
+        clean = {k: v for k, v in patch.items() if k in allowed}
+        if not clean:
+            return 0
+        count = 0
+        for id in ids:
+            try:
+                self.update(id, clean)
+                count += 1
+            except (NotFoundError, ValidationError):
+                continue
+        return count
+
+    def reorder(self, ids: list[str]) -> None:
+        self._repo.reorder(ids)
 
     def mark_synthesized(self, id: str, audio_path: str) -> Dialogue:
         current = self.get(id)
