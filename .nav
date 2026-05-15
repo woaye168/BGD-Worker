@@ -1,4 +1,4 @@
 职责: 游戏NPC情感语音生成器，多角色剧本导入→批量多格式合成→打包导出，可打包为桌面应用
 总览: 入口=desktop.py(桌面应用)/main.py(开发服务)/build.py(打包); 核心模块=contract,character,dialogue,synthesis,storage,tts,api
 入口: 无（顶级模块）
-子图: contract:领域类型与端口协议, character:角色CRUD, dialogue:对话与剧本/CSV/JSON导入, synthesis:合成编排+情感映射+ZIP导出, storage:JSON仓储与音频文件存储, tts:TTS引擎适配(edge-tts/ffmpeg多格式), api:FastAPI HTTP接口
+子图: contract:领域类型+端口协议+应用配置(含日志/设置), character:角色CRUD, dialogue:对话与剧本/CSV/JSON导入, synthesis:合成编排+情感映射+ZIP导出, storage:SQLite仓储+音频文件存储+旧JSON自动迁移, tts:TTS引擎适配(edge-tts/ffmpeg多格式), api:FastAPI HTTP接口+全局日志+运行时设置
