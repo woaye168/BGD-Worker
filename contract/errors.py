@@ -2,12 +2,13 @@
 # @layer: contract
 # @contract:
 #   - DomainError (基类)
-#   - NotFoundError, ValidationError, TTSError, StorageError
+#   - NotFoundError, ValidationError, TTSError, StorageError, ModelError
 # @depends:
 #   - 无
 # @invariants:
 #   - HTTP 状态映射在 api 层完成，logic / adapter 仅 raise 领域错误
 #   - 所有领域错误继承自 DomainError，便于统一捕获
+#   - ModelError 用于模型/运行时的下载/校验/导入失败；未单独映射时落到 DomainError 处理器(500)
 
 class DomainError(Exception):
     """领域错误基类。"""
@@ -27,3 +28,7 @@ class TTSError(DomainError):
 
 class StorageError(DomainError):
     """持久化层故障。映射 HTTP 500。"""
+
+
+class ModelError(DomainError):
+    """模型/运行时管理故障（下载/校验/导入/解析失败）。"""

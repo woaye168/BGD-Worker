@@ -1,4 +1,4 @@
-# @purpose: 领域模型（角色、对话、情感、合成任务）
+# @purpose: 领域模型（角色、对话、情感、合成任务、TTS 模型元数据）
 # @layer: contract
 # @contract:
 #   - Emotion: Enum (neutral/happy/sad/angry/surprise/fear/calm)
@@ -7,6 +7,8 @@
 #   - SynthesisScope: Enum (pending/all/selected)
 #   - SynthesisRequest(scope, dialogue_ids)
 #   - SynthesisResult(dialogue_id, success, audio_path, error)
+#   - TTSModel(id, engine, name, description, character, language, source, installed,
+#             size_bytes, license, license_url, download_url, sha256, files)
 # @depends:
 #   - pydantic (BaseModel, Field)
 #   - datetime (stdlib)
@@ -17,6 +19,11 @@
 #   - Dialogue.scene 是自由文本分组标签（场景/对话组），空串表示未分组；导入时由调用方赋值
 #   - Character.rate/pitch/volume 不约束硬上下限，由 TTS 引擎层裁剪
 #   - 字符串 id 由 service 层生成（uuid4 hex 前 10 位），contract 层不规定
+#   - Character.voice 字符串语义：可含 "engine:model_id" 前缀；无前缀视为 "edge:<value>"（向后兼容）
+#     具体前缀解析在 tts/dispatch_engine 层完成，contract 不强制校验
+#   - TTSModel.id 在 (engine + 本地安装目录) 内唯一；不同引擎之间允许同 id 共存（dispatch 用 engine 区分）
+#   - TTSModel.source ∈ {builtin, catalog, imported}；installed=True 表示文件已落盘 data_dir/models/
+#   - TTSModel.download_url/sha256 仅 catalog 项有；installed 项可为空
 
 from datetime import datetime
 from enum import Enum
@@ -73,3 +80,22 @@ class SynthesisResult(BaseModel):
     success: bool
     audio_path: Optional[str] = None
     error: Optional[str] = None
+
+
+class TTSModel(BaseModel):
+    """TTS 音色模型元数据（已安装/在线 catalog 共用一个类型）。"""
+
+    id: str
+    engine: str = "edge"
+    name: str = ""
+    description: str = ""
+    character: str = ""
+    language: str = "zh-CN"
+    source: str = "builtin"
+    installed: bool = False
+    size_bytes: int = 0
+    license: str = ""
+    license_url: str = ""
+    download_url: str = ""
+    sha256: str = ""
+    files: list[str] = Field(default_factory=list)
