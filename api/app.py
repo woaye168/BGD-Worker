@@ -37,6 +37,7 @@ from contract.errors import (
 from .logging_setup import install_request_logging, setup_logging
 from .routes_character import router as character_router
 from .routes_dialogue import router as dialogue_router
+from .routes_settings import router as settings_router
 from .routes_synthesis import router as synthesis_router
 
 _logger = logging.getLogger("npc.app")
@@ -82,6 +83,7 @@ def create_app() -> FastAPI:
     app.include_router(character_router)
     app.include_router(dialogue_router)
     app.include_router(synthesis_router)
+    app.include_router(settings_router)
 
     web_dir = _web_dir()
     if web_dir.exists():

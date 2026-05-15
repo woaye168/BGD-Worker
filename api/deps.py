@@ -9,6 +9,7 @@
 #   - get_character_service() -> CharacterService
 #   - get_dialogue_service() -> DialogueService
 #   - get_orchestrator() -> SynthesisOrchestrator
+#   - invalidate_caches() -> None    # 清空全部 lru_cache，用于设置变更后
 # @depends:
 #   - functools.lru_cache
 #   - ../contract/config.py
@@ -95,3 +96,18 @@ def get_orchestrator() -> SynthesisOrchestrator:
         characters=get_character_repo(),
         dialogues=get_dialogue_repo(),
     )
+
+
+def invalidate_caches() -> None:
+    """设置变更后清空所有 lru_cache 单例，强制下次访问按新配置重建。"""
+    for fn in (
+        get_config,
+        get_character_repo,
+        get_dialogue_repo,
+        get_audio_store,
+        get_tts_engine,
+        get_character_service,
+        get_dialogue_service,
+        get_orchestrator,
+    ):
+        fn.cache_clear()

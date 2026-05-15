@@ -1,4 +1,4 @@
-职责: FastAPI HTTP接口、依赖注入、静态前端挂载、全局日志
+职责: FastAPI HTTP接口、依赖注入、静态前端挂载、全局日志、运行时设置
 出口: create_app, setup_logging, install_request_logging
 入口: ../contract, ../character, ../dialogue, ../synthesis, ../storage, ../tts
-子图: app:应用工厂+异常映射+启动日志, deps:依赖注入与生命周期, logging_setup:控制台+滚动文件+请求中间件, routes_character/routes_dialogue/routes_synthesis:三组路由
+子图: app:应用工厂+异常映射+启动日志, deps:依赖注入+缓存失效, logging_setup:控制台+滚动文件+请求中间件, routes_character/routes_dialogue/routes_synthesis/routes_settings:四组路由
