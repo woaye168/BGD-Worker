@@ -1,0 +1,80 @@
+name: Release
+
+# 触发条件：推送 v 开头的 tag（如 v0.1.0）或手动触发。
+# 行为：在 windows-latest 上跑 PyInstaller 打包，产物以 zip 形式自动上传到 GitHub Release。
+# 仅支持 Windows（其他平台暂不发版，应用层会提示"暂不支持"）。
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "要打包的 ref（分支名或 commit），默认当前默认分支"
+        required: false
+        default: ""
+
+permissions:
+  contents: write  # softprops/action-gh-release 需写 Release
+
+jobs:
+  build-windows:
+    name: 打包 Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: 同步依赖（含 dev）
+        run: uv sync
+
+      - name: PyInstaller 打包
+        shell: bash
+        run: |
+          set -o pipefail
+          uv run python build.py 2>&1 | tee build_output.log
+
+      - name: 失败诊断
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo "## Windows 打包失败诊断"
+            echo "### build.py 输出（末 150 行）"
+            echo '```'
+            tail -n 150 build_output.log 2>/dev/null || echo "(无 build_output.log)"
+            echo '```'
+            echo "### PyInstaller warn 文件"
+            echo '```'
+            cat build/NPC-Voice-Gen/warn-NPC-Voice-Gen.txt 2>/dev/null || echo "(无 warn 文件)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 打包 dist 为 zip
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}"
+          if (-not $version -or $version -eq "main") { $version = "manual-$(Get-Date -Format yyyyMMdd-HHmmss)" }
+          $zip = "NPC-Voice-Gen-windows-x64-$version.zip"
+          Compress-Archive -Path dist/NPC-Voice-Gen -DestinationPath $zip -CompressionLevel Optimal
+          echo "ZIP_PATH=$zip" >> $env:GITHUB_ENV
+          echo "ZIP_NAME=$zip" >> $env:GITHUB_ENV
+
+      - name: 同时作为 workflow artifact 备份（保 30 天）
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP_NAME }}
+          path: ${{ env.ZIP_PATH }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: 发布到 GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ZIP_PATH }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true

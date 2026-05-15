@@ -1,5 +1,7 @@
 name: CI
 
+# 仅跑轻量冒烟（~2 分钟）。重量级 PyInstaller 打包独立到 release.yml，
+# 只在 v* tag 触发，避免每次 push 都烧 CI 时间。
 on:
   push:
     branches: ["**"]
@@ -81,49 +83,3 @@ jobs:
           curl -sf http://127.0.0.1:8000/api/characters
           curl -sf -o /dev/null -w 'index.html -> HTTP %{http_code}\n' http://127.0.0.1:8000/
           kill $pid
-
-  build:
-    name: 打包 (${{ matrix.os }})
-    needs: smoke
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: 安装 uv
-        uses: astral-sh/setup-uv@v5
-
-      - name: 同步依赖（含 dev）
-        run: uv sync
-
-      - name: PyInstaller 打包
-        shell: bash
-        run: |
-          set -o pipefail
-          uv run python build.py 2>&1 | tee build_output.log
-
-      - name: 失败诊断
-        if: failure()
-        shell: bash
-        run: |
-          {
-            echo "## ${{ matrix.os }} 打包失败诊断"
-            echo "### build.py 输出（末 150 行）"
-            echo '```'
-            tail -n 150 build_output.log 2>/dev/null || echo "(无 build_output.log)"
-            echo '```'
-            echo "### PyInstaller warn 文件"
-            echo '```'
-            cat build/NPC-Voice-Gen/warn-NPC-Voice-Gen.txt 2>/dev/null || echo "(无 warn 文件)"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: 上传产物
-        uses: actions/upload-artifact@v4
-        with:
-          name: NPC-Voice-Gen-${{ matrix.os }}
-          path: dist/
-          if-no-files-found: error
