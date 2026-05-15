@@ -44,8 +44,9 @@ jobs:
               "contract.models", "contract.config", "contract.ports", "contract.errors",
               "character.service", "dialogue.service", "dialogue.importer",
               "synthesis.orchestrator", "synthesis.emotion_mapper", "synthesis.exporter",
-              "storage.json_repository", "storage.audio_store",
+              "storage.sqlite_repository", "storage.audio_store",
               "tts.edge_tts_engine", "api.deps", "api.app",
+              "api.logging_setup", "api.routes_settings",
           ]
           for m in mods:
               importlib.import_module(m)
