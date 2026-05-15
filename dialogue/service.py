@@ -17,12 +17,15 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from uuid import uuid4
 
 from contract.errors import NotFoundError, ValidationError
 from contract.models import Dialogue
 from contract.ports import DialogueRepository
+
+logger = logging.getLogger(__name__)
 
 _INVALIDATING_FIELDS = {"text", "emotion", "character_id"}
 
@@ -56,6 +59,10 @@ class DialogueService:
         }
         dialogue = Dialogue.model_validate(payload)
         self._repo.upsert(dialogue)
+        logger.info(
+            "dialogue created: id=%s character_id=%s scene=%r emotion=%s",
+            dialogue.id, dialogue.character_id, dialogue.scene, dialogue.emotion.value,
+        )
         return dialogue
 
     def update(self, id: str, patch: dict) -> Dialogue:
@@ -65,19 +72,26 @@ class DialogueService:
             clean["text"] = (clean["text"] or "").strip()
             if not clean["text"]:
                 raise ValidationError("对话内容不能为空")
-        if _INVALIDATING_FIELDS & set(clean.keys()):
+        invalidating = bool(_INVALIDATING_FIELDS & set(clean.keys()))
+        if invalidating:
             clean["audio_path"] = None
             clean["synthesized_at"] = None
         updated = current.model_copy(update=clean)
         self._repo.upsert(updated)
+        logger.info(
+            "dialogue updated: id=%s fields=%s invalidated_audio=%s",
+            id, sorted(k for k in clean if k not in {"audio_path", "synthesized_at"}), invalidating,
+        )
         return updated
 
     def delete(self, id: str) -> None:
         if not self._repo.delete(id):
             raise NotFoundError(f"dialogue not found: {id}")
+        logger.info("dialogue deleted: id=%s", id)
 
     def bulk_add(self, dialogues: list[Dialogue]) -> int:
         self._repo.bulk_add(dialogues)
+        logger.info("dialogues bulk_add: count=%d", len(dialogues))
         return len(dialogues)
 
     def bulk_patch(self, ids: list[str], patch: dict) -> int:
@@ -92,10 +106,15 @@ class DialogueService:
                 count += 1
             except (NotFoundError, ValidationError):
                 continue
+        logger.info(
+            "dialogues bulk_patch: targeted=%d applied=%d fields=%s",
+            len(ids), count, sorted(clean.keys()),
+        )
         return count
 
     def reorder(self, ids: list[str]) -> None:
         self._repo.reorder(ids)
+        logger.info("dialogues reordered: count=%d", len(ids))
 
     def mark_synthesized(self, id: str, audio_path: str) -> Dialogue:
         current = self.get(id)
@@ -104,4 +123,5 @@ class DialogueService:
             "synthesized_at": datetime.utcnow(),
         })
         self._repo.upsert(updated)
+        logger.debug("dialogue marked synthesized: id=%s audio_path=%s", id, audio_path)
         return updated

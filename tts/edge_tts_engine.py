@@ -19,12 +19,15 @@
 #   - 情感作用：emotion → get_prosody → 与角色 rate/pitch/volume 相乘 → 编码为 edge-tts 字符串参数
 
 import asyncio
+import logging
 import shutil
 from typing import Optional
 
 from contract.errors import TTSError
 from contract.models import Emotion
 from synthesis.emotion_mapper import get_prosody
+
+logger = logging.getLogger(__name__)
 
 try:
     import edge_tts  # type: ignore[import-untyped]
@@ -53,11 +56,16 @@ def resolve_ffmpeg(explicit: Optional[str]) -> Optional[str]:
 
 class EdgeTTSEngine:
     def __init__(self, output_format: str = "ogg", ffmpeg_path: Optional[str] = None) -> None:
+        requested = output_format
         fmt = output_format if output_format in ("ogg", "mp3", "wav") else "ogg"
         self._ffmpeg = resolve_ffmpeg(ffmpeg_path)
         if fmt != "mp3" and self._ffmpeg is None:
             fmt = "mp3"  # 缺 ffmpeg → 降级，保证可用
         self._format = fmt
+        logger.info(
+            "edge_tts engine: requested=%s effective=%s ffmpeg=%s",
+            requested, self._format, self._ffmpeg or "<none>",
+        )
 
     @property
     def output_extension(self) -> str:

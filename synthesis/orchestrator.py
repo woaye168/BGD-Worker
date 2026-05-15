@@ -15,6 +15,7 @@
 #   - batch 顺序处理，逐条 yield 结果；单条失败不影响后续；调用方需自行收集
 #   - 失败的合成不写入 audio_path，下次 PENDING 范围会自动重试
 
+import logging
 from datetime import datetime
 from typing import AsyncIterator, Optional
 
@@ -26,6 +27,8 @@ from contract.ports import (
     DialogueRepository,
     TTSEngine,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class SynthesisOrchestrator:
@@ -67,10 +70,14 @@ class SynthesisOrchestrator:
         try:
             character = self._chars.get(dialogue.character_id)
             if character is None:
+                logger.warning("synthesize skipped: character not found id=%s dialogue=%s",
+                               dialogue.character_id, dialogue.id)
                 return SynthesisResult(
                     dialogue_id=dialogue.id, success=False,
                     error=f"character not found: {dialogue.character_id}",
                 )
+            logger.debug("synthesize start: dialogue=%s character=%s emotion=%s",
+                         dialogue.id, character.name, dialogue.emotion.value)
             data = await self._tts.synthesize(
                 text=dialogue.text,
                 voice=character.voice,
@@ -87,14 +94,23 @@ class SynthesisOrchestrator:
                 "synthesized_at": datetime.utcnow(),
             })
             self._dialogs.upsert(updated)
+            logger.info("synthesize ok: dialogue=%s bytes=%d audio_path=%s",
+                        dialogue.id, len(data), audio_path)
             return SynthesisResult(
                 dialogue_id=dialogue.id, success=True, audio_path=audio_path,
             )
         except Exception as e:
+            logger.error("synthesize failed: dialogue=%s error=%s", dialogue.id, e)
             return SynthesisResult(
                 dialogue_id=dialogue.id, success=False, error=str(e),
             )
 
     async def batch(self, dialogues: list[Dialogue]) -> AsyncIterator[SynthesisResult]:
+        logger.info("batch synthesize start: count=%d", len(dialogues))
+        ok = fail = 0
         for d in dialogues:
-            yield await self.synthesize_one(d)
+            result = await self.synthesize_one(d)
+            ok += 1 if result.success else 0
+            fail += 0 if result.success else 1
+            yield result
+        logger.info("batch synthesize done: total=%d ok=%d fail=%d", len(dialogues), ok, fail)

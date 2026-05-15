@@ -15,12 +15,15 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Optional
 from uuid import uuid4
 
 from contract.errors import NotFoundError, ValidationError
 from contract.models import Character
 from contract.ports import CharacterRepository
+
+logger = logging.getLogger(__name__)
 
 
 class CharacterService:
@@ -52,6 +55,7 @@ class CharacterService:
         payload = {**data, "id": uuid4().hex[:10], "name": name}
         character = Character.model_validate(payload)
         self._repo.upsert(character)
+        logger.info("character created: id=%s name=%s voice=%s", character.id, character.name, character.voice)
         return character
 
     def update(self, id: str, patch: dict) -> Character:
@@ -64,8 +68,10 @@ class CharacterService:
             clean_patch["name"] = name
         updated = current.model_copy(update=clean_patch)
         self._repo.upsert(updated)
+        logger.info("character updated: id=%s fields=%s", id, sorted(clean_patch.keys()))
         return updated
 
     def delete(self, id: str) -> None:
         if not self._repo.delete(id):
             raise NotFoundError(f"character not found: {id}")
+        logger.info("character deleted: id=%s", id)
