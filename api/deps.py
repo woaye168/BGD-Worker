@@ -14,12 +14,14 @@
 #   - ../contract/config.py
 #   - ../character/service.py, ../dialogue/service.py
 #   - ../synthesis/orchestrator.py
-#   - ../storage/json_repository.py, ../storage/audio_store.py
+#   - ../storage/sqlite_repository.py, ../storage/audio_store.py
 #   - ../tts/edge_tts_engine.py
 # @invariants:
 #   - 所有 get_* 函数返回进程单例（lru_cache 维度为无参）
-#   - get_config 启动时调用 AppConfig.ensure_dirs()，保证 data_dir/audio_dir 存在
+#   - get_config 调用 AppConfig.load() 优先读取 settings.json，并 ensure_dirs()
+#   - SQLite 仓储首次构造时自动建表 + 一次性迁移旧 JSON（见 sqlite_repository._migrate_json_if_needed）
 #   - TTS 引擎按 config.tts.engine 分支创建，新增引擎需在此扩展（见 AI_MAINTENANCE.md）
+#   - 设置变更（如 audio_dir_override）后需调 invalidate_caches() 让单例重建
 
 from functools import lru_cache
 
@@ -34,26 +36,28 @@ from contract.ports import (
 )
 from dialogue.service import DialogueService
 from storage.audio_store import FileSystemAudioStore
-from storage.json_repository import JSONCharacterRepository, JSONDialogueRepository
+from storage.sqlite_repository import SQLiteCharacterRepository, SQLiteDialogueRepository
 from synthesis.orchestrator import SynthesisOrchestrator
 from tts.edge_tts_engine import EdgeTTSEngine
 
 
 @lru_cache
 def get_config() -> AppConfig:
-    cfg = AppConfig()
+    cfg = AppConfig.load()
     cfg.ensure_dirs()
     return cfg
 
 
 @lru_cache
 def get_character_repo() -> CharacterRepository:
-    return JSONCharacterRepository(get_config().characters_file)
+    cfg = get_config()
+    return SQLiteCharacterRepository(cfg.db_file, cfg.data_dir)
 
 
 @lru_cache
 def get_dialogue_repo() -> DialogueRepository:
-    return JSONDialogueRepository(get_config().dialogues_file)
+    cfg = get_config()
+    return SQLiteDialogueRepository(cfg.db_file, cfg.data_dir)
 
 
 @lru_cache

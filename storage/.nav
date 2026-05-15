@@ -1,4 +1,4 @@
-职责: JSON 文件仓储与文件系统音频存储
-出口: JSONCharacterRepository, JSONDialogueRepository, FileSystemAudioStore
+职责: SQLite 仓储与文件系统音频存储（含旧 JSON 一次性迁移）
+出口: SQLiteCharacterRepository, SQLiteDialogueRepository, FileSystemAudioStore
 入口: ../contract
-子图: json_repository:角色/对话JSON持久化, audio_store:OGG文件落盘与检索
+子图: sqlite_repository:角色+对话同库持久化+JSON自动迁移, audio_store:音频文件落盘与检索
