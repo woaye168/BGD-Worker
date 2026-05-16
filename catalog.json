@@ -1,0 +1,9 @@
+{
+  "version": "0.1.0",
+  "windows_x64": {
+    "download_url": "https://github.com/woaye168/BGD-Worker/releases/download/runtime-v0.1.0/local-tts-runtime-v0.1.0.zip",
+    "size_bytes": 1799531223,
+    "sha256": "2b7decac7825f5b9cf6985e8e1af0e48583ef852668174aefaf7fd4ef9288068"
+  },
+  "models": []
+}
