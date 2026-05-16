@@ -163,8 +163,16 @@ def _ensure_pipeline() -> object:
 
     # GPT-SoVITS 内部用相对路径（如 GPT_SoVITS/configs/...）；切到 runtime_root 让 import 与 path 解析正确
     os.chdir(str(_RUNTIME_ROOT))
-    if str(_RUNTIME_ROOT) not in sys.path:
-        sys.path.insert(0, str(_RUNTIME_ROOT))
+    # 两层 sys.path 都加：
+    # - runtime_root：让 `from GPT_SoVITS.TTS_infer_pack ...` 工作
+    # - runtime_root/GPT_SoVITS：让 GPT-SoVITS 内部的顶级导入 `from AR.models...` /
+    #   `from module.xxx import yyy` / `from text.symbols import ...` 工作
+    #   （GPT-SoVITS 假设运行时 cwd 是 GPT_SoVITS/ 子目录，AR/module/text/feature_extractor
+    #    等都是兄弟包，他们的 import 都没用相对 import，必须靠 sys.path）
+    for p in (_RUNTIME_ROOT, _RUNTIME_ROOT / "GPT_SoVITS"):
+        sp = str(p)
+        if sp not in sys.path:
+            sys.path.insert(0, sp)
 
     # 报告关键依赖版本（torch / transformers / GPT-SoVITS）——出错时知道是不是 nightly 漂移
     logger.info("loading torch ...")
