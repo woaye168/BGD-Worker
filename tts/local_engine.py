@@ -157,6 +157,7 @@ class LocalTTSEngine:
         ffmpeg_path: Optional[str] = None,
         backend: str = "auto",
         synthesize_timeout_sec: float = _DEFAULT_SYNTHESIZE_TIMEOUT_SEC,
+        log_dir: Optional[Path] = None,
     ) -> None:
         self._runtime_dir = Path(runtime_dir)
         self._models = model_store
@@ -171,13 +172,17 @@ class LocalTTSEngine:
         self._format = fmt
         self._backend = backend
         self._synthesize_timeout = max(30.0, float(synthesize_timeout_sec))
+        self._log_dir = Path(log_dir) if log_dir else None
+        self._log_file: Optional[Path] = None
+        self._log_handle = None  # 文件句柄，传给 Popen 当 stdout/stderr
         self._proc: Optional[subprocess.Popen] = None
         self._port: Optional[int] = None
         self._spawn_lock = asyncio.Lock()
         logger.info(
-            "local_tts engine: requested=%s effective=%s backend=%s timeout=%.0fs runtime=%s ffmpeg=%s",
+            "local_tts engine: requested=%s effective=%s backend=%s timeout=%.0fs"
+            " runtime=%s log_dir=%s ffmpeg=%s",
             requested, self._format, self._backend, self._synthesize_timeout,
-            self._runtime_dir, self._ffmpeg or "<none>",
+            self._runtime_dir, self._log_dir, self._ffmpeg or "<none>",
         )
 
     @property
@@ -205,19 +210,31 @@ class LocalTTSEngine:
         proc = self._proc
         self._proc = None
         self._port = None
-        if proc is None:
-            return
-        with _ALL_PROCS_LOCK:
-            with contextlib.suppress(ValueError):
-                _ALL_PROCS.remove(proc)
-        if proc.poll() is None:
-            with contextlib.suppress(Exception):
-                proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
+        if proc is not None:
+            with _ALL_PROCS_LOCK:
+                with contextlib.suppress(ValueError):
+                    _ALL_PROCS.remove(proc)
+            if proc.poll() is None:
                 with contextlib.suppress(Exception):
-                    proc.kill()
+                    proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    with contextlib.suppress(Exception):
+                        proc.kill()
+        self._close_log_file()
+
+    def _tail_log_file(self, n_lines: int = 30) -> str:
+        """读 runtime 日志文件末尾 n_lines 行；用于错误诊断。"""
+        if self._log_file is None or not self._log_file.exists():
+            return "(无日志文件)"
+        try:
+            # 简单读全文取尾部；runtime 日志通常 < 10MB，性能 OK
+            text = self._log_file.read_text(encoding="utf-8", errors="replace")
+            lines = text.splitlines()
+            return "\n".join(lines[-n_lines:])
+        except Exception as e:
+            return f"(读日志失败: {e})"
 
     async def synthesize(
         self,
@@ -277,9 +294,12 @@ class LocalTTSEngine:
                         detail = str(parsed["detail"])
                 detail = detail or raw_body
             friendly = _translate_runtime_error(detail) if detail else f"HTTP {e.code} {e.reason}"
-            raise TTSError(f"本地 TTS 合成失败：{friendly}") from e
+            log_hint = f"\nruntime 详细日志：{self._log_file}" if self._log_file else ""
+            raise TTSError(f"本地 TTS 合成失败：{friendly}{log_hint}") from e
         except URLError as e:
-            # 子进程可能死了，clear 以便下次重启
+            # 子进程可能死了，capture 日志尾部再 clear
+            tail = self._tail_log_file(50)
+            log_hint = f"\n完整日志：{self._log_file}" if self._log_file else ""
             self.close()
             reason = getattr(e, "reason", e)
             hint = "运行时进程可能崩溃或未就绪"
@@ -288,7 +308,10 @@ class LocalTTSEngine:
                     f"合成超时（{self._synthesize_timeout:.0f}s）；"
                     f"首次合成需加载基础模型可能较慢，可在「软件设置」加大超时"
                 )
-            raise TTSError(f"本地 TTS 运行时通信失败：{hint}（{reason}）") from e
+            raise TTSError(
+                f"本地 TTS 运行时通信失败：{hint}（{reason}）"
+                f"{log_hint}\nruntime 日志末尾：\n{tail}"
+            ) from e
         # 7. 转码（如需要）
         if self._format == "wav":
             return wav
@@ -316,23 +339,37 @@ class LocalTTSEngine:
 
             port = _pick_free_port()
             model_root = self._models.root()
+            # -X utf8: 强制 Python stdout/stderr 用 UTF-8，避免 Windows 默认 cp936 把中文 log
+            #   写成乱码（serve.py 抛中文 RuntimeError 时尤其重要）
             cmd = [
                 str(python_exe),
+                "-X", "utf8",
                 str(serve_py),
                 "--port", str(port),
                 "--model-root", str(model_root),
                 "--backend", self._backend,
             ]
-            logger.info("spawn local-tts runtime: %s", " ".join(cmd))
+            # 打开 runtime 日志文件（合并 stdout + stderr，写文件而不是 PIPE —— 否则 buffer
+            # 满了子进程会阻塞，是经典的 Popen 坑：之前 502/500 实际就是这个炸的）
+            self._open_log_file(port)
+            logger.info(
+                "spawn local-tts runtime: %s  (log → %s)",
+                " ".join(cmd), self._log_file or "<stderr>",
+            )
+
+            popen_kwargs: dict = {
+                "cwd": str(self._runtime_dir),
+                "stdout": self._log_handle if self._log_handle else subprocess.DEVNULL,
+                "stderr": subprocess.STDOUT,  # 合并到 stdout 同一个文件，traceback 不丢
+            }
+            # Windows: 不弹黑色控制台（pywebview 父进程是 GUI，spawn 控制台子进程默认会弹窗）
+            if sys.platform == "win32":
+                popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+
             try:
-                proc = subprocess.Popen(
-                    cmd,
-                    cwd=str(self._runtime_dir),
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                )
+                proc = subprocess.Popen(cmd, **popen_kwargs)
             except OSError as e:
+                self._close_log_file()
                 raise TTSError(f"启动本地 TTS 运行时失败：{e}") from e
             with _ALL_PROCS_LOCK:
                 _ALL_PROCS.append(proc)
@@ -345,11 +382,41 @@ class LocalTTSEngine:
                     proc.terminate()
                 with _ALL_PROCS_LOCK, contextlib.suppress(ValueError):
                     _ALL_PROCS.remove(proc)
+                self._close_log_file()
                 raise
 
             self._proc = proc
             self._port = port
             return port
+
+    def _open_log_file(self, port: int) -> None:
+        """打开 runtime 日志文件；失败则回落 DEVNULL（不阻塞启动）。"""
+        self._close_log_file()
+        if self._log_dir is None:
+            return
+        try:
+            self._log_dir.mkdir(parents=True, exist_ok=True)
+            self._log_file = self._log_dir / "local-tts-runtime.log"
+            # append binary 模式：子进程会按 OS 默认编码写（Windows GBK / Linux UTF-8）
+            self._log_handle = self._log_file.open("ab")
+            # 写一条分隔头，方便用户找最新一次运行的日志段
+            import datetime
+            header = (
+                f"\n==== local-tts runtime start: "
+                f"{datetime.datetime.now().isoformat(timespec='seconds')} port={port} ====\n"
+            ).encode("utf-8")
+            self._log_handle.write(header)
+            self._log_handle.flush()
+        except Exception as e:
+            logger.warning("打开 runtime 日志文件失败，子进程 stdout/stderr 将丢弃: %s", e)
+            self._log_handle = None
+            self._log_file = None
+
+    def _close_log_file(self) -> None:
+        if self._log_handle is not None:
+            with contextlib.suppress(Exception):
+                self._log_handle.close()
+        self._log_handle = None
 
     async def _wait_health(self, port: int, proc: subprocess.Popen) -> None:
         url = f"http://127.0.0.1:{port}/health"
@@ -357,13 +424,12 @@ class LocalTTSEngine:
         deadline = loop.time() + _HEALTH_TIMEOUT_SEC
         while loop.time() < deadline:
             if proc.poll() is not None:
-                # 进程提前死亡，捞 stderr 提示
-                stderr = ""
-                if proc.stderr is not None:
-                    with contextlib.suppress(Exception):
-                        stderr = proc.stderr.read() or ""
+                # 进程提前死亡 —— stderr 已经写到日志文件，捞最后 30 行给用户看
+                tail = self._tail_log_file(30)
+                log_hint = f"完整日志：{self._log_file}" if self._log_file else "（无日志）"
                 raise TTSError(
-                    f"本地 TTS 运行时启动失败（退出码 {proc.returncode}）：{stderr.strip()[:500]}"
+                    f"本地 TTS 运行时启动失败（退出码 {proc.returncode}）。{log_hint}\n"
+                    f"日志末尾：\n{tail}"
                 )
             try:
                 resp = await asyncio.to_thread(_http_get_json, url, 1.0)

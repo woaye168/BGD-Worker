@@ -118,6 +118,7 @@ def get_tts_engine() -> TTSEngine:
         ffmpeg_path=cfg.tts.ffmpeg_path,
         backend=cfg.tts.local.backend,
         synthesize_timeout_sec=cfg.tts.local.synthesize_timeout_sec,
+        log_dir=cfg.log_dir,
     )
     return DispatchTTSEngine(sub_engines={"edge": edge, "local": local})
 
