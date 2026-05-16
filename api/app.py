@@ -28,6 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from contract.config import AppConfig
 from contract.errors import (
     DomainError,
+    ModelError,
     NotFoundError,
     StorageError,
     TTSError,
@@ -37,6 +38,7 @@ from contract.errors import (
 from .logging_setup import install_request_logging, setup_logging
 from .routes_character import router as character_router
 from .routes_dialogue import router as dialogue_router
+from .routes_models import router as models_router
 from .routes_settings import router as settings_router
 from .routes_synthesis import router as synthesis_router
 
@@ -72,6 +74,10 @@ def create_app() -> FastAPI:
     async def _tts(_: Request, exc: TTSError):
         return JSONResponse(status_code=502, content={"detail": str(exc)})
 
+    @app.exception_handler(ModelError)
+    async def _model(_: Request, exc: ModelError):
+        return JSONResponse(status_code=502, content={"detail": str(exc)})
+
     @app.exception_handler(StorageError)
     async def _storage(_: Request, exc: StorageError):
         return JSONResponse(status_code=500, content={"detail": str(exc)})
@@ -84,6 +90,7 @@ def create_app() -> FastAPI:
     app.include_router(dialogue_router)
     app.include_router(synthesis_router)
     app.include_router(settings_router)
+    app.include_router(models_router)
 
     web_dir = _web_dir()
     if web_dir.exists():
