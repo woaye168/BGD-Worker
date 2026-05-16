@@ -10,13 +10,17 @@
 #   - profile=minimal：仅 fastapi+uvicorn+pydantic+serve.py（≈50MB；只能 --mock 模式跑）
 #   - profile=full（默认）：再加 torch(cpu) + 完整 GPT-SoVITS 源码 + 基础模型
 #     （Bert+HuBERT+预训练 GPT/SoVITS；≈1.8-2GB；可真实推理）
+#   - GPT-SoVITS requirements.txt 经 _filter_requirements 过滤：drop pyopenjtalk(JA, 需 CMake)、
+#     jieba_fast(C ext)、gradio*(webui)、faster-whisper/funasr(ASR)、modelscope、WeTextProcessing/pynini 等。
+#     被 drop 的包用 _create_stub_packages 建 stub（jieba_fast 透传 jieba；pyopenjtalk 调用时显式抛错）
+#     副作用：runtime 不支持日语合成；中文/英文不受影响
 #   - GitHub Release 单文件上限 2GB；当前选 CPU torch + 单语种基础模型，控制在 2GB 内
 #     （NVIDIA 用户初期落 CPU 模式，等后续 CUDA 变体）
 #   - 产物结构（profile=full）：
 #       <zip-root>/
 #         VERSION
 #         serve.py
-#         python/python.exe + Lib/site-packages/...
+#         python/python.exe + Lib/site-packages/...（含 stub 模块）
 #         GPT_SoVITS/                    ← 从官方仓库克隆
 #         base_models/
 #           chinese-roberta-wwm-ext-large/
@@ -30,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 import shutil
 import subprocess
 import sys
@@ -72,6 +77,47 @@ _HF_BASE_MODELS_PATTERNS = [
     "s1bert25hz-2kh-longer-epoch=68e-step=50232.ckpt",
     "s2G488k.pth",
 ]
+
+# 从 GPT-SoVITS requirements.txt 过滤掉的包。原因分两类：
+#   1) 需要原生 C/C++/CMake 编译且无 Windows wheel（嵌入式 Python 上构建会炸）
+#   2) 推理用不到（训练/ASR/webui/备用模型源）
+# 副作用：日语合成会失效（pyopenjtalk 没了）；中文用例不受影响，jieba_fast → jieba 用 stub 透传。
+_DROP_REQUIREMENTS = {
+    # 日/韩语支持：pyopenjtalk 需要 CMake + OpenJTalk 源码编译，wheel 缺失
+    "pyopenjtalk",
+    "pyopenjtalk-prebuilt",
+    # 中文 fast 分词：Cython 原生扩展；jieba 是纯 Python 兜底
+    "jieba_fast",
+    # WebUI：headless runtime 用不到
+    "gradio",
+    "gradio_client",
+    # ASR/训练相关：runtime 只做推理
+    "faster-whisper",
+    "funasr",
+    # 备用模型源：我们走 huggingface_hub
+    "modelscope",
+    # 重型原生文本归一化（OpenFST 等）：可选，缺失不影响基础合成
+    "wetextprocessing",
+    "pynini",
+    "nemo-text-processing",
+    "nemo_text_processing",
+}
+
+# 给被 drop 的包建 stub，避免 GPT-SoVITS 在 import 时炸（模块级 import 会失败）。
+# 值是该 stub 模块对外暴露的属性列表（GPT-SoVITS 可能 `from X import Y` 形式访问）。
+_STUB_PACKAGES = {
+    # pyopenjtalk: 调用时显式抛错（运行时若执行 JA 合成才会触发）
+    "pyopenjtalk": {
+        "type": "error",
+        "attrs": ["g2p", "run_frontend", "extract_fullcontext", "make_label", "load_marine_model"],
+        "error_msg": "pyopenjtalk 未打包到此 runtime（仅中文/英文模型可用）",
+    },
+    # jieba_fast: 透传到 jieba 的 API（功能完全等价，速度略慢）
+    "jieba_fast": {
+        "type": "alias",
+        "alias_of": "jieba",
+    },
+}
 
 
 def _download(url: str, target: Path) -> None:
@@ -155,6 +201,82 @@ def _pip_install_requirements(python_exe: Path, requirements_file: Path) -> None
         ],
         check=True,
     )
+
+
+def _filter_requirements(src: Path, dst: Path, drop_names: set[str]) -> list[str]:
+    """从 src 拷贝到 dst，跳过 drop_names 中的包；返回被 drop 的原始行列表（含版本约束）。
+
+    匹配按 PEP 503 标准化（小写、`_` → `-`）；处理 `pkg`, `pkg==1.0`, `pkg>=1.0`, `pkg[extras]`,
+    `# 注释`, 空行等常见形态。不处理 -e/-r/git+ 等高级形态（GPT-SoVITS requirements.txt 不该有）。
+    """
+    drop_norm = {d.lower().replace("_", "-") for d in drop_names}
+    dropped: list[str] = []
+    with src.open("r", encoding="utf-8") as fin, dst.open("w", encoding="utf-8") as fout:
+        for raw in fin:
+            stripped = raw.strip()
+            if not stripped or stripped.startswith("#") or stripped.startswith("-"):
+                fout.write(raw)
+                continue
+            # 包名取 `<>=!~;[\s` 前的部分
+            name_match = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)", stripped)
+            if not name_match:
+                fout.write(raw)
+                continue
+            pkg_norm = name_match.group(1).lower().replace("_", "-")
+            if pkg_norm in drop_norm:
+                dropped.append(stripped)
+                fout.write(f"# (dropped by build_runtime.py): {raw}")
+            else:
+                fout.write(raw)
+    return dropped
+
+
+def _site_packages_dir(python_dir: Path) -> Path:
+    """嵌入式 Python 的 site-packages 路径。"""
+    sp = python_dir / "Lib" / "site-packages"
+    if not sp.exists():
+        raise RuntimeError(f"site-packages not found: {sp}")
+    return sp
+
+
+def _create_stub_packages(python_dir: Path, stubs: dict[str, dict]) -> None:
+    """为被 drop 的包建 stub 模块；防止 GPT-SoVITS 模块级 import 时炸。"""
+    site_packages = _site_packages_dir(python_dir)
+    for name, spec in stubs.items():
+        pkg_dir = site_packages / name
+        if pkg_dir.exists():
+            # 已经被 pip 装上（例如 jieba_fast 真有 wheel 装了），不覆盖
+            logger.info("stub skip: %s already exists in site-packages", name)
+            continue
+        pkg_dir.mkdir(parents=True, exist_ok=True)
+        init_py = pkg_dir / "__init__.py"
+        if spec["type"] == "alias":
+            alias_of = spec["alias_of"]
+            init_py.write_text(
+                "# stub by build_runtime.py: " + name + " → " + alias_of + "\n"
+                "from " + alias_of + " import *  # noqa: F401, F403\n"
+                "import " + alias_of + " as _real\n"
+                "import sys as _sys\n"
+                "_sys.modules[__name__].__dict__.update(_real.__dict__)\n",
+                encoding="utf-8",
+            )
+            logger.info("stub created: %s → alias of %s", name, alias_of)
+        elif spec["type"] == "error":
+            msg = spec.get("error_msg", f"{name} unavailable in this runtime")
+            attrs = spec.get("attrs", [])
+            lines = [
+                "# stub by build_runtime.py: " + name + " (raises on use)",
+                "import warnings",
+                "warnings.warn(" + repr(f"{name} stub loaded; calls will raise RuntimeError") + ")",
+                "",
+                "def _missing(*args, **kwargs):",
+                "    raise RuntimeError(" + repr(msg) + ")",
+                "",
+            ]
+            for attr in attrs:
+                lines.append(f"{attr} = _missing")
+            init_py.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            logger.info("stub created: %s (raise-on-use, %d attrs)", name, len(attrs))
 
 
 def _clone_gpt_sovits(target: Path) -> None:
@@ -300,10 +422,23 @@ def build(version: str, python_version: str, profile: str, out_dir: Path) -> Pat
             shutil.rmtree(gpt_sovits_clone, ignore_errors=True)
             _strip_gpt_sovits_extras(stage)
 
-            # 6. 装 GPT-SoVITS 完整运行依赖（librosa/transformers/jieba_fast/...）
+            # 6. 装 GPT-SoVITS 完整运行依赖（librosa/transformers/...）
+            #   先过滤掉 pyopenjtalk(JA, 需 CMake)/jieba_fast(C ext)/gradio(webui)/faster-whisper(ASR) 等
+            #   再装 cmake/setuptools/wheel 作为剩余 C 扩展包的兜底构建工具
             req_path = tmp_path / "gpt_sovits_requirements.txt"
             if req_path.exists():
-                _pip_install_requirements(python_exe, req_path)
+                filtered_req = tmp_path / "gpt_sovits_requirements_filtered.txt"
+                dropped = _filter_requirements(req_path, filtered_req, _DROP_REQUIREMENTS)
+                for line in dropped:
+                    logger.warning("dropped requirement: %s", line)
+
+                # 装编译工具（safety net；GPT-SoVITS 仍可能拉 C 扩展包）
+                _pip_install(python_exe, ["cmake", "setuptools>=68", "wheel"])
+
+                _pip_install_requirements(python_exe, filtered_req)
+
+                # 给被 drop 的包建 stub（GPT-SoVITS 可能在模块级 import 它们）
+                _create_stub_packages(python_dir, _STUB_PACKAGES)
             else:
                 logger.warning("GPT-SoVITS requirements.txt 未找到，跳过深依赖安装")
 
