@@ -63,6 +63,10 @@ class LocalTTSSettings(BaseModel):
     backend: str = "auto"  # auto|cuda|directml|cpu (Win 仅这几种；非 Win 当前不支持)
     runtime_installed: bool = False
     runtime_version: Optional[str] = None
+    # 单次合成 HTTP 请求超时（秒）。首次合成需懒加载基础模型（BERT≈1GB、HuBERT≈400MB、
+    # GPT≈150MB、SoVITS≈80MB）+ 切 voice 权重，CPU 模式可能 300-600s；慢机器/老 HDD 还要更久。
+    # 默认 600s 兼顾"不假性失败"和"真死锁也别等太久"；UI 设置可调。
+    synthesize_timeout_sec: int = 600
 
 
 class CatalogSettings(BaseModel):

@@ -53,9 +53,57 @@ _SERVE_PY = "serve.py"
 _PYTHON_EXE = Path("python") / "python.exe"  # 运行时包内 embeddable python 位置
 _HEALTH_TIMEOUT_SEC = 30.0
 _HEALTH_INTERVAL_SEC = 0.3
+# 默认单次合成 HTTP 超时（秒）；可经构造参数覆盖（cfg.tts.local.synthesize_timeout_sec）
 # 首次合成需懒加载基础模型（BERT+HuBERT≈1.5GB）+ voice 权重（GPT≈150MB+SoVITS≈80MB）
-# 加上 CPU 推理本身，单次首调可能 100-300s；后续调用快得多但仍可能 30s+（长句）
-_SYNTHESIZE_TIMEOUT_SEC = 300.0
+# 加上 CPU 推理本身，单次首调可能 300-600s；后续调用快得多但仍可能 30s+（长句）
+_DEFAULT_SYNTHESIZE_TIMEOUT_SEC = 600.0
+
+
+def _translate_runtime_error(raw: str) -> str:
+    """把 runtime 返回的英文/技术错误映射到用户友好的中文提示。
+
+    raw 是 runtime serve.py 抛出来的错误（HTTPException.detail 或 RuntimeError 文案）。
+    匹配按从具体到通用顺序；命中则返回"中文提示（原文片段）"。
+    没命中则原文回传。
+    """
+    if not raw:
+        return "未知错误"
+    low = raw.lower()
+
+    # 显存/内存类
+    if "out of memory" in low or "oom" in low or "outofmemoryerror" in low:
+        if "cuda" in low or "gpu" in low:
+            return f"显存不足，请关闭其他占用 GPU 的程序后重试（原文：{raw[:200]}）"
+        return f"内存不足，请关闭部分程序后重试（原文：{raw[:200]}）"
+
+    # GPU 不可用
+    if "no cuda gpus are available" in low or "cuda is not available" in low:
+        return f"未检测到可用的 GPU，已退回 CPU 模式（原文：{raw[:200]}）"
+
+    # 模型/参考音文件缺失
+    if "model file missing" in low or "ref_audio" in low or "ref.wav" in low:
+        return f"模型文件或参考音频丢失，请重新导入该 voice 模型（原文：{raw[:200]}）"
+    if "filenotfounderror" in low or "no such file" in low:
+        return f"运行时找不到文件（运行时包损坏或模型不完整？请尝试重装）：{raw[:200]}"
+
+    # 运行时初始化类（统一对 low 做匹配；中文字符 .lower() 不变）
+    if "torch 加载失败" in low or "无法 import gpt_sovits" in low or "tts_config 构造失败" in low:
+        return f"本地 TTS 引擎初始化失败，运行时包可能损坏，请到「模型管理」重装运行时（原文：{raw[:200]}）"
+    if "tts pipeline 构造失败" in low:
+        return f"本地 TTS 模型加载失败，可能基础模型未下载完整或与代码不兼容（原文：{raw[:200]}）"
+
+    # voice 权重加载类
+    if "加载模型权重失败" in low or "init_t2s_weights" in low or "init_vits_weights" in low:
+        return f"voice 模型权重加载失败，模型文件可能损坏或与 GPT-SoVITS v2 配置不兼容（原文：{raw[:200]}）"
+
+    # 推理类
+    if "推理返回空音频" in low or "推理返回空" in low:
+        return f"合成返回空音频，文本/参考音频可能有问题（请检查 ref_text 是否匹配 ref_audio 内容；原文：{raw[:200]}）"
+    if "推理失败" in low or "gpt-sovits 推理" in low:
+        return f"GPT-SoVITS 推理出错：{raw[:300]}"
+
+    # 通用
+    return raw[:500]
 
 # 进程退出时兜底清理所有引擎的子进程
 _ALL_PROCS: list[subprocess.Popen] = []
@@ -108,6 +156,7 @@ class LocalTTSEngine:
         output_format: str = "ogg",
         ffmpeg_path: Optional[str] = None,
         backend: str = "auto",
+        synthesize_timeout_sec: float = _DEFAULT_SYNTHESIZE_TIMEOUT_SEC,
     ) -> None:
         self._runtime_dir = Path(runtime_dir)
         self._models = model_store
@@ -121,13 +170,14 @@ class LocalTTSEngine:
             fmt = "wav"
         self._format = fmt
         self._backend = backend
+        self._synthesize_timeout = max(30.0, float(synthesize_timeout_sec))
         self._proc: Optional[subprocess.Popen] = None
         self._port: Optional[int] = None
         self._spawn_lock = asyncio.Lock()
         logger.info(
-            "local_tts engine: requested=%s effective=%s backend=%s runtime=%s ffmpeg=%s",
-            requested, self._format, self._backend, self._runtime_dir,
-            self._ffmpeg or "<none>",
+            "local_tts engine: requested=%s effective=%s backend=%s timeout=%.0fs runtime=%s ffmpeg=%s",
+            requested, self._format, self._backend, self._synthesize_timeout,
+            self._runtime_dir, self._ffmpeg or "<none>",
         )
 
     @property
@@ -214,17 +264,31 @@ class LocalTTSEngine:
                     "pitch": pitch,
                     "volume": volume,
                 },
-                _SYNTHESIZE_TIMEOUT_SEC,
+                self._synthesize_timeout,
             )
         except HTTPError as e:
             detail = ""
             with contextlib.suppress(Exception):
-                detail = e.read().decode("utf-8", errors="ignore")
-            raise TTSError(f"本地 TTS 合成失败（HTTP {e.code}）：{detail or e.reason}") from e
+                raw_body = e.read().decode("utf-8", errors="ignore")
+                # 尝试解析 FastAPI 标准错误 JSON {"detail": "..."}
+                with contextlib.suppress(Exception):
+                    parsed = json.loads(raw_body)
+                    if isinstance(parsed, dict) and "detail" in parsed:
+                        detail = str(parsed["detail"])
+                detail = detail or raw_body
+            friendly = _translate_runtime_error(detail) if detail else f"HTTP {e.code} {e.reason}"
+            raise TTSError(f"本地 TTS 合成失败：{friendly}") from e
         except URLError as e:
             # 子进程可能死了，clear 以便下次重启
             self.close()
-            raise TTSError(f"本地 TTS 运行时通信失败：{e.reason}") from e
+            reason = getattr(e, "reason", e)
+            hint = "运行时进程可能崩溃或未就绪"
+            if "timed out" in str(reason).lower() or "timeout" in str(reason).lower():
+                hint = (
+                    f"合成超时（{self._synthesize_timeout:.0f}s）；"
+                    f"首次合成需加载基础模型可能较慢，可在「软件设置」加大超时"
+                )
+            raise TTSError(f"本地 TTS 运行时通信失败：{hint}（{reason}）") from e
         # 7. 转码（如需要）
         if self._format == "wav":
             return wav

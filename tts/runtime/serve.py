@@ -34,6 +34,7 @@ import logging
 import os
 import sys
 import threading
+import time
 import wave
 from pathlib import Path
 from typing import Optional
@@ -121,13 +122,20 @@ def _ensure_pipeline() -> object:
     """懒构造 GPT-SoVITS TTS pipeline；返回 pipeline 实例。
 
     要求：runtime_root 下存在 GPT_SoVITS/ 与 base_models/。
+    每一步都 log，方便排查"哪一步炸了"——首次合成超时长，没日志根本不知道在干嘛。
     """
     global _PIPELINE
     if _PIPELINE is not None:
         return _PIPELINE
 
+    t0 = time.time()
     gpt_sovits_root = _RUNTIME_ROOT  # GPT_SoVITS/ 直接在 runtime_root 下
     base_models = _RUNTIME_ROOT / "base_models"
+    logger.info(
+        "pipeline init starting: runtime_root=%s gpt_sovits_dir=%s base_models=%s",
+        _RUNTIME_ROOT, gpt_sovits_root / "GPT_SoVITS", base_models,
+    )
+
     if not (gpt_sovits_root / "GPT_SoVITS").exists():
         raise FileNotFoundError(
             f"GPT_SoVITS code not found at {gpt_sovits_root / 'GPT_SoVITS'} "
@@ -138,17 +146,56 @@ def _ensure_pipeline() -> object:
             f"base_models not found at {base_models}（runtime 包损坏？请重装）"
         )
 
+    # 检查关键 base models 文件 —— 早炸早知道，比 GPT-SoVITS 抛模糊错误强
+    required = [
+        base_models / "s1bert25hz-2kh-longer-epoch=68e-step=50232.ckpt",
+        base_models / "s2G488k.pth",
+        base_models / "chinese-roberta-wwm-ext-large",
+        base_models / "chinese-hubert-base",
+    ]
+    for p in required:
+        if not p.exists():
+            raise FileNotFoundError(
+                f"base_models 缺关键文件/目录: {p}（runtime 包不完整？请重装）"
+            )
+        if p.is_file() and p.stat().st_size == 0:
+            raise FileNotFoundError(f"base_models 文件为空: {p}（下载损坏？请重装）")
+
     # GPT-SoVITS 内部用相对路径（如 GPT_SoVITS/configs/...）；切到 runtime_root 让 import 与 path 解析正确
     os.chdir(str(_RUNTIME_ROOT))
     if str(_RUNTIME_ROOT) not in sys.path:
         sys.path.insert(0, str(_RUNTIME_ROOT))
 
+    # 报告关键依赖版本（torch / transformers / GPT-SoVITS）——出错时知道是不是 nightly 漂移
+    logger.info("loading torch ...")
+    try:
+        import torch  # type: ignore[import-not-found]
+
+        logger.info(
+            "torch loaded: version=%s cuda_available=%s mps_available=%s",
+            torch.__version__,
+            torch.cuda.is_available(),
+            getattr(torch.backends, "mps", None) and torch.backends.mps.is_available(),
+        )
+        if torch.cuda.is_available():
+            logger.info(
+                "cuda device: name=%s count=%d",
+                torch.cuda.get_device_name(0),
+                torch.cuda.device_count(),
+            )
+    except Exception as e:
+        logger.exception("torch load failed")
+        raise RuntimeError(f"torch 加载失败: {e}") from e
+
     # 懒导入 —— 缺依赖时给清晰错误
+    logger.info("loading GPT_SoVITS.TTS_infer_pack ...")
     try:
         from GPT_SoVITS.TTS_infer_pack.TTS import TTS, TTS_Config  # type: ignore[import-not-found]
     except ImportError as e:
+        logger.exception("GPT_SoVITS import failed")
         raise RuntimeError(
-            f"无法 import GPT_SoVITS: {e}（确认 runtime 包中含 GPT_SoVITS/ 与其依赖）"
+            f"无法 import GPT_SoVITS: {e}（确认 runtime 包中含 GPT_SoVITS/ 与其依赖；"
+            f"可能某个被 stub/drop 的包在模块级被 GPT-SoVITS 引用）"
         ) from e
 
     # 设备 + 半精度策略
@@ -172,9 +219,24 @@ def _ensure_pipeline() -> object:
             "cnhuhbert_base_path": str(base_models / "chinese-hubert-base"),
         }
     }
-    logger.info("init GPT-SoVITS pipeline: backend=%s device=%s is_half=%s", _BACKEND, device_str, is_half)
-    config = TTS_Config(config_dict)
-    _PIPELINE = TTS(config)
+    logger.info(
+        "init TTS_Config: backend=%s device=%s is_half=%s version=v2",
+        _BACKEND, device_str, is_half,
+    )
+    try:
+        config = TTS_Config(config_dict)
+    except Exception as e:
+        logger.exception("TTS_Config construct failed")
+        raise RuntimeError(f"TTS_Config 构造失败: {e}") from e
+
+    logger.info("init TTS pipeline (loads BERT/HuBERT/base GPT/base SoVITS) ...")
+    try:
+        _PIPELINE = TTS(config)
+    except Exception as e:
+        logger.exception("TTS pipeline construct failed")
+        raise RuntimeError(f"TTS pipeline 构造失败: {e}") from e
+
+    logger.info("pipeline ready in %.1fs", time.time() - t0)
     return _PIPELINE
 
 
@@ -189,10 +251,21 @@ def _switch_voice(model_id: str) -> dict:
             p = meta[key]
             if not p.exists():
                 raise FileNotFoundError(f"model file missing: {p}")
-        logger.info("switch voice: %s → %s", _CURRENT_VOICE, model_id)
-        pipeline.init_t2s_weights(str(meta["gpt_weights"]))  # type: ignore[attr-defined]
-        pipeline.init_vits_weights(str(meta["sovits_weights"]))  # type: ignore[attr-defined]
+        t0 = time.time()
+        logger.info(
+            "switch voice: %s → %s (gpt=%s sovits=%s ref=%s ref_text_len=%d ref_lang=%s text_lang=%s)",
+            _CURRENT_VOICE, model_id,
+            meta["gpt_weights"].name, meta["sovits_weights"].name, meta["ref_audio"].name,
+            len(meta["ref_text"]), meta["ref_lang"], meta["text_lang"],
+        )
+        try:
+            pipeline.init_t2s_weights(str(meta["gpt_weights"]))  # type: ignore[attr-defined]
+            pipeline.init_vits_weights(str(meta["sovits_weights"]))  # type: ignore[attr-defined]
+        except Exception as e:
+            logger.exception("init voice weights failed")
+            raise RuntimeError(f"加载模型权重失败 (model={model_id}): {e}") from e
         _CURRENT_VOICE = model_id
+        logger.info("voice loaded in %.1fs", time.time() - t0)
     return meta
 
 
@@ -235,6 +308,11 @@ def synthesize_wav(
             "speed_factor": float(rate) if rate > 0 else 1.0,
             # GPT-SoVITS 不直接吃 pitch/volume；忽略 + 留给主 app 用 _ffmpeg 后处理（未来）
         }
+        t_infer = time.time()
+        logger.info(
+            "synthesize start: model=%s text_len=%d text_preview=%r emotion=%s rate=%.2f",
+            model_id, len(text), text[:50], emotion, rate,
+        )
         chunks = []
         sr = 32000
         try:
@@ -248,6 +326,12 @@ def synthesize_wav(
         if not chunks:
             raise RuntimeError("GPT-SoVITS 推理返回空音频")
         audio = np.concatenate(chunks, axis=0)
+        infer_secs = time.time() - t_infer
+        logger.info(
+            "synthesize done: samples=%d sr=%d duration=%.2fs infer_time=%.1fs (%.1fx realtime)",
+            audio.shape[0], sr, audio.shape[0] / sr, infer_secs,
+            (audio.shape[0] / sr) / infer_secs if infer_secs > 0 else 0,
+        )
 
         # soundfile 写 WAV PCM16
         buf = io.BytesIO()

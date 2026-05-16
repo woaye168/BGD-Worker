@@ -71,13 +71,29 @@ _HF_DOWNLOAD_DEPS = ["huggingface_hub"]
 
 # GPT-SoVITS 仓库 + 基础模型 HF repo
 _GPT_SOVITS_REPO = "https://github.com/RVC-Boss/GPT-SoVITS.git"
-_GPT_SOVITS_REF = "main"  # 后续可固定到具体 release tag 提高复现性
+# Pin 到具体 release tag 保证可复现：20240821v2 是纯 V2 时代，TTS_infer_pack API
+# 与 serve.py 的 `version: "v2"` 配置兼容；V2 模型社区资源最丰富。
+# 升级须知：V2Pro / V3 / V4 tag 的 TTS_Config 字段可能漂移，升级时先在 Windows 实机回归一次合成。
+_GPT_SOVITS_REF = "20240821v2"
 _HF_BASE_MODELS_REPO = "lj1995/GPT-SoVITS"
 _HF_BASE_MODELS_PATTERNS = [
     "chinese-roberta-wwm-ext-large/**",
     "chinese-hubert-base/**",
     "s1bert25hz-2kh-longer-epoch=68e-step=50232.ckpt",
     "s2G488k.pth",
+]
+
+# Build 完成后对 base_models/ 做 fail-fast 校验。两类断言：
+#   1) FILES：相对 base_models/ 必须存在的具体文件（缺 → 视为 HF 下载失败）
+#   2) NONEMPTY_DIRS：目录必须存在且非空（容忍 HF 把 pytorch_model.bin 改成 model.safetensors）
+# 防止 HF repo 结构悄改、pattern 静默漏文件，让 serve.py 启动时才炸。
+_BASE_MODELS_REQUIRED_FILES = [
+    "s1bert25hz-2kh-longer-epoch=68e-step=50232.ckpt",
+    "s2G488k.pth",
+]
+_BASE_MODELS_REQUIRED_NONEMPTY_DIRS = [
+    "chinese-roberta-wwm-ext-large",  # BERT：内部含 config.json + pytorch_model.bin 或 model.safetensors
+    "chinese-hubert-base",             # HuBERT：同上
 ]
 
 # 从 GPT-SoVITS requirements.txt 过滤掉的包。原因分两类：
@@ -335,6 +351,7 @@ def _download_base_models(python_exe: Path, base_models_dir: Path, work_dir: Pat
 
     huggingface_hub 装在 stage 的 embeddable python 中（与运行时 deps 共用），
     通过子进程调用避免与构建机器 host python 耦合。
+    下载完后做 fail-fast 校验，文件/目录缺失立刻 SystemExit。
     """
     base_models_dir.mkdir(parents=True, exist_ok=True)
     # 用 stage python 跑下载脚本（这样 huggingface_hub 装哪都行；只要 stage python 能找到）
@@ -349,9 +366,49 @@ def _download_base_models(python_exe: Path, base_models_dir: Path, work_dir: Pat
     )
     script = work_dir / "_hf_download.py"
     script.write_text(snippet, encoding="utf-8")
-    logger.info("huggingface snapshot_download: repo=%s patterns=%s", _HF_BASE_MODELS_REPO, _HF_BASE_MODELS_PATTERNS)
+    logger.info(
+        "huggingface snapshot_download: repo=%s patterns=%s",
+        _HF_BASE_MODELS_REPO, _HF_BASE_MODELS_PATTERNS,
+    )
     subprocess.run([str(python_exe), str(script)], check=True)
     script.unlink(missing_ok=True)
+
+    _verify_base_models(base_models_dir)
+
+
+def _verify_base_models(base_models_dir: Path) -> None:
+    """对下载的 base_models 做 fail-fast 校验。任何缺失抛 SystemExit。"""
+    missing_files: list[str] = []
+    for rel in _BASE_MODELS_REQUIRED_FILES:
+        p = base_models_dir / rel
+        if not p.exists():
+            missing_files.append(rel)
+        elif p.stat().st_size == 0:
+            missing_files.append(f"{rel} (0 bytes)")
+    empty_dirs: list[str] = []
+    for rel in _BASE_MODELS_REQUIRED_NONEMPTY_DIRS:
+        p = base_models_dir / rel
+        if not p.is_dir() or not any(p.iterdir()):
+            empty_dirs.append(rel)
+
+    if missing_files or empty_dirs:
+        lines = ["base_models 校验失败：HuggingFace 下载结果不完整。"]
+        if missing_files:
+            lines.append("  缺文件：")
+            lines += [f"    - {f}" for f in missing_files]
+        if empty_dirs:
+            lines.append("  缺/空目录：")
+            lines += [f"    - {d}" for d in empty_dirs]
+        lines.append(
+            f"  请检查 HF repo {_HF_BASE_MODELS_REPO} 的实际目录树是否还匹配"
+            f" _HF_BASE_MODELS_PATTERNS={_HF_BASE_MODELS_PATTERNS}"
+        )
+        raise SystemExit("\n".join(lines))
+    logger.info(
+        "base_models 校验通过：%d 个必需文件 + %d 个必需目录 OK",
+        len(_BASE_MODELS_REQUIRED_FILES),
+        len(_BASE_MODELS_REQUIRED_NONEMPTY_DIRS),
+    )
 
 
 def _make_zip(src_dir: Path, out_zip: Path) -> None:
