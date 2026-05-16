@@ -1,12 +1,14 @@
 # @purpose: 本地 TTS 运行时打包脚本（Windows-only；CI 由 release.yml 触发）
 # @layer: build-tool (非 app 一部分)
 # @usage:
-#   python scripts/build_runtime.py [--version 1.0.0] [--python-version 3.11.9]
+#   python scripts/build_runtime.py [--version 1.0.0] [--python-version 3.10.11]
 #                                   [--profile {minimal,full}] [--out dist]
 # @output:
 #   dist/local-tts-runtime-v<version>.zip
 # @invariants:
 #   - 仅 Windows runners：脚本断言 sys.platform == 'win32'
+#   - 默认 Python 3.10.11 embeddable：GPT-SoVITS requirements.txt pin numba==0.56.4，
+#     该版本只支持 Python 3.7-3.10；升级到 3.11+ 需等 GPT-SoVITS 上游解锁 numba
 #   - profile=minimal：仅 fastapi+uvicorn+pydantic+serve.py（≈50MB；只能 --mock 模式跑）
 #   - profile=full（默认）：再加 torch(cpu) + 完整 GPT-SoVITS 源码 + 基础模型
 #     （Bert+HuBERT+预训练 GPT/SoVITS；≈1.8-2GB；可真实推理）
@@ -540,8 +542,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", default="0.1.0", help="VERSION 文件内容 + zip 文件名版本")
     parser.add_argument(
         "--python-version",
-        default="3.11.9",
-        help="Python embeddable 版本（需与 python.org/ftp/python 上 -embed-amd64.zip 对应）",
+        default="3.10.11",
+        help=(
+            "Python embeddable 版本（需与 python.org/ftp/python 上 -embed-amd64.zip 对应）。"
+            "默认 3.10.11：GPT-SoVITS requirements.txt pin 了 numba==0.56.4，"
+            "该版本只支持 Python 3.7-3.10；3.11+ 装不上。"
+            "升级 Python 须同时升级 numba pin（要等 GPT-SoVITS 上游解锁）。"
+        ),
     )
     parser.add_argument(
         "--profile",
