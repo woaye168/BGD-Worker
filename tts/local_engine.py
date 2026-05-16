@@ -53,7 +53,9 @@ _SERVE_PY = "serve.py"
 _PYTHON_EXE = Path("python") / "python.exe"  # 运行时包内 embeddable python 位置
 _HEALTH_TIMEOUT_SEC = 30.0
 _HEALTH_INTERVAL_SEC = 0.3
-_SYNTHESIZE_TIMEOUT_SEC = 120.0
+# 首次合成需懒加载基础模型（BERT+HuBERT≈1.5GB）+ voice 权重（GPT≈150MB+SoVITS≈80MB）
+# 加上 CPU 推理本身，单次首调可能 100-300s；后续调用快得多但仍可能 30s+（长句）
+_SYNTHESIZE_TIMEOUT_SEC = 300.0
 
 # 进程退出时兜底清理所有引擎的子进程
 _ALL_PROCS: list[subprocess.Popen] = []

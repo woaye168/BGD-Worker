@@ -167,22 +167,53 @@
 ### 打包本地 TTS 运行时 (Win 专属，独立于 app 发版)
 
 1. 仅 Windows 可跑（`scripts/build_runtime.py` 断言 `sys.platform == 'win32'`）
-2. `uv run python scripts/build_runtime.py --version <ver>` —— 下载 Python embeddable +
-   pip install fastapi/uvicorn/pydantic + 复制 `tts/runtime/serve.py` + 写 `VERSION` + 打 zip
-3. CI 触发：`runtime-v*` tag 推送（与 app 的 `v*` tag 分开发版），产物 zip 自动上传 Release
-4. **当前 runtime 包是"最小可用"版本**：仅含 `serve.py` 的 `--mock` 模式（返回静默 WAV）；
-   真实 GPT-SoVITS 推理由后续 PR 接入（需要在 `build_runtime.py` 中加 `pip install torch torch-directml`
-   + 拉 GPT-SoVITS 源码 + 在 `serve.py:_load_model` / `synthesize_wav` 中接入推理 API）
-5. zip 内层结构：`{VERSION, serve.py, python/python.exe + Lib/site-packages/...}`；
-   `LocalTTSRuntimeInstaller._extract_zip` 与 `LocalTTSEngine._ensure_runtime_running` 据此寻路
+2. 两种 profile：
+   - `--profile minimal`（≈50MB）：仅 fastapi+uvicorn+pydantic+serve.py；只能 `--mock` 模式跑
+   - `--profile full`（默认，≈1.8GB）：加 CPU torch + GPT-SoVITS 源码 + 基础模型，真实推理
+3. CI 触发：`runtime-v*` tag 推送（与 app 的 `v*` tag 分开发版），用 full profile；产物 zip 自动上传 Release
+4. **当前 full 包受 GitHub Release 单文件 2GB 限制走 CPU torch**：NVIDIA 用户初期也是 CPU 模式
+   （慢但可用）；后续若需 CUDA 加速需出独立的 `local-tts-runtime-cuda-v*` 变体（torch CUDA wheel
+   单个就 ~2GB）
+5. AMD DirectML：当前 serve.py 设计预留了 backend=directml 探测分支，但 GPT-SoVITS 实际
+   `device=cpu` 走 CPU 模式（torch_directml 需要 GPT-SoVITS 代码改造才能真正用上 iGPU）
+6. zip 内层结构（full）：
+   ```
+   {VERSION, serve.py, python/python.exe + Lib/site-packages/...,
+    GPT_SoVITS/, tools/, base_models/{chinese-roberta-wwm-ext-large/, chinese-hubert-base/,
+                                       s1bert25hz-...ckpt, s2G488k.pth}}
+   ```
+7. `LocalTTSRuntimeInstaller._extract_zip` 与 `LocalTTSEngine._ensure_runtime_running` 据此寻路
+
+### 本地 TTS 模型 meta.json schema（用户导入时需要）
+
+`data_dir/models/<model_id>/meta.json` 必填字段：
+```json
+{
+  "id": "...",            // 与目录名一致（FileSystemModelStore 以目录名为权威）
+  "engine": "local",      // local / edge
+  "name": "...",          // 显示名
+  // GPT-SoVITS 特定（serve.py 读取）；缺则按默认文件名查找
+  "gpt_weights": "gpt.ckpt",       // 默认: gpt.ckpt
+  "sovits_weights": "sovits.pth",  // 默认: sovits.pth
+  "ref_audio": "ref.wav",          // 默认: ref.wav
+  "ref_text": "...",               // 参考音频的转写文本，强烈建议提供
+  "ref_lang": "zh",                // ref_audio 的语言: zh/en/ja
+  "text_lang": "zh",               // 输入文本语言: zh/en/ja
+  "gpt_sovits_version": "v2"       // 默认: v2
+}
+```
+模型目录所有文件由 `FileSystemModelStore` 扫描记入 `files/size_bytes`。
 
 ### 改 runtime/serve.py 时
 
 1. `tts/runtime/` 是独立进程域：**不可** `import` 主 app 的 `contract/` / `api/` 层
-2. 所有非 stdlib 依赖必须懒导入（`_build_app` 内 import fastapi；`detect_backend` 内 import torch）
-   以便主 app 在 CI 冒烟时能 `import tts.runtime.serve` 验证语法而不强依赖运行时 deps
+2. 所有非 stdlib + 非 pydantic 依赖必须懒导入（fastapi/uvicorn 在 `_build_app/main`；
+   torch/GPT_SoVITS/numpy/soundfile 在 `_ensure_pipeline/synthesize_wav` 非 mock 分支）；
+   主 app 在 CI 冒烟时 `import tts.runtime.serve` 仅触发 pydantic 导入
 3. HTTP API 形状如有变更，同步改 `tts/local_engine.py:_call_runtime` 的请求体与解析逻辑
-4. `--mock` 模式必须始终可用（CI 用它做 IPC 链路冒烟，不依赖 torch/GPT-SoVITS）
+4. `--mock` 模式必须始终可用（CI 端到端冒烟依赖；不需要 torch/GPT-SoVITS/numpy/soundfile）
+5. 首次合成需懒加载基础模型 + voice 权重，CPU 模式可能 100-300s；`LocalTTSEngine._SYNTHESIZE_TIMEOUT_SEC`
+   已设 300s 兜底；若调整 GPT-SoVITS 默认采样/预热策略同步评估
 
 ### 添加新的运行时设置项
 
