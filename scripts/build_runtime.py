@@ -11,8 +11,10 @@
 #   - profile=full（默认）：再加 torch(cpu) + 完整 GPT-SoVITS 源码 + 基础模型
 #     （Bert+HuBERT+预训练 GPT/SoVITS；≈1.8-2GB；可真实推理）
 #   - GPT-SoVITS requirements.txt 经 _filter_requirements 过滤：drop pyopenjtalk(JA, 需 CMake)、
-#     jieba_fast(C ext)、gradio*(webui)、faster-whisper/funasr(ASR)、modelscope、WeTextProcessing/pynini 等。
-#     被 drop 的包用 _create_stub_packages 建 stub（jieba_fast 透传 jieba；pyopenjtalk 调用时显式抛错）
+#     jieba_fast(C ext)、opencc(C++ binding, 嵌入式 Python 缺开发库)、gradio*(webui)、
+#     faster-whisper/funasr(ASR)、modelscope、WeTextProcessing/pynini 等。
+#     被 drop 的包用 _create_stub_packages 建 stub（jieba_fast 透传 jieba；pyopenjtalk 调用时显式抛错）。
+#     opencc 则由 opencc-python-reimplemented 纯 Python 替代，API 兼容。
 #     副作用：runtime 不支持日语合成；中文/英文不受影响
 #   - GitHub Release 单文件上限 2GB；当前选 CPU torch + 单语种基础模型，控制在 2GB 内
 #     （NVIDIA 用户初期落 CPU 模式，等后续 CUDA 变体）
@@ -88,6 +90,9 @@ _DROP_REQUIREMENTS = {
     "pyopenjtalk-prebuilt",
     # 中文 fast 分词：Cython 原生扩展；jieba 是纯 Python 兜底
     "jieba_fast",
+    # opencc 官方新版为 C++ binding，嵌入式 Python 缺少头文件与 lib，构建会炸
+    # 下装 opencc-python-reimplemented 作为纯 Python 替代
+    "opencc",
     # WebUI：headless runtime 用不到
     "gradio",
     "gradio_client",
@@ -436,6 +441,10 @@ def build(version: str, python_version: str, profile: str, out_dir: Path) -> Pat
                 _pip_install(python_exe, ["cmake", "setuptools>=68", "wheel"])
 
                 _pip_install_requirements(python_exe, filtered_req)
+
+                # opencc 被从 GPT-SoVITS 依赖中过滤掉（C++ binding，嵌入式 Python 无法构建）。
+                # 用纯 Python 的 opencc-python-reimplemented 替代，API 兼容 `from opencc import OpenCC`。
+                _pip_install(python_exe, ["opencc-python-reimplemented"])
 
                 # 给被 drop 的包建 stub（GPT-SoVITS 可能在模块级 import 它们）
                 _create_stub_packages(python_dir, _STUB_PACKAGES)
