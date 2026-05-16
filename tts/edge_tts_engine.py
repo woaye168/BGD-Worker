@@ -1,31 +1,32 @@
 # @purpose: edge-tts 引擎适配（合成 MP3 → 按需 ffmpeg 转码 OGG/WAV）
 # @layer: adapter
 # @contract:
-#   - resolve_ffmpeg(explicit) -> Optional[str]
+#   - resolve_ffmpeg(explicit) -> Optional[str]    # 转发自 ./_ffmpeg.py，保留出口
 #   - EdgeTTSEngine(output_format, ffmpeg_path).{output_extension, synthesize, list_voices}
 # @depends:
-#   - asyncio, shutil (stdlib)
+#   - logging (stdlib)
 #   - edge_tts (第三方，可选导入)
-#   - imageio_ffmpeg (第三方，可选导入，提供捆绑的静态 ffmpeg)
 #   - ../contract/models.py: Emotion
 #   - ../contract/errors.py: TTSError
 #   - ../synthesis/emotion_mapper.py: get_prosody
+#   - ./_ffmpeg.py: resolve_ffmpeg, transcode  (ffmpeg 探测+转码共享工具)
 # @invariants:
-#   - ffmpeg 三级探测：显式路径 → 系统 PATH → imageio-ffmpeg 捆绑；全失败则 _ffmpeg=None
+#   - ffmpeg 探测/转码逻辑下沉到 ./_ffmpeg.py，本模块仅消费
 #   - 要求 ogg/wav 但无 ffmpeg 时，构造期自动降级为 mp3（开箱即用优先，绝不因缺 ffmpeg 而完全不可用）
-#   - mp3 格式走 edge-tts 原生输出零转码；ogg/wav 经 ffmpeg 转码
+#   - mp3 格式走 edge-tts 原生输出零转码；ogg/wav 经 _ffmpeg.transcode 转码
 #   - output_extension 反映"实际生效"格式（可能因降级而异于请求值）
 #   - edge_tts 缺失时构造仍成功；synthesize 调用时再抛 TTSError
 #   - 情感作用：emotion → get_prosody → 与角色 rate/pitch/volume 相乘 → 编码为 edge-tts 字符串参数
+#   - voice 入参假定已被 dispatch 层剥掉 "edge:" 前缀（本引擎只认裸 voice id）
 
-import asyncio
 import logging
-import shutil
 from typing import Optional
 
 from contract.errors import TTSError
 from contract.models import Emotion
 from synthesis.emotion_mapper import get_prosody
+
+from ._ffmpeg import resolve_ffmpeg, transcode  # noqa: F401  (resolve_ffmpeg 仍是本模块出口)
 
 logger = logging.getLogger(__name__)
 
@@ -33,25 +34,6 @@ try:
     import edge_tts  # type: ignore[import-untyped]
 except ImportError:
     edge_tts = None  # type: ignore[assignment]
-
-# 格式 → (ffmpeg 编码器, 容器)；mp3 不经 ffmpeg 故不在此表
-_TRANSCODE = {
-    "ogg": ("libopus", "ogg"),
-    "wav": ("pcm_s16le", "wav"),
-}
-
-
-def resolve_ffmpeg(explicit: Optional[str]) -> Optional[str]:
-    if explicit:
-        return explicit
-    found = shutil.which("ffmpeg")
-    if found:
-        return found
-    try:
-        import imageio_ffmpeg  # type: ignore[import-untyped]
-        return imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception:
-        return None
 
 
 class EdgeTTSEngine:
@@ -93,7 +75,7 @@ class EdgeTTSEngine:
         mp3 = await self._render_mp3(text, voice, emotion, rate, pitch, volume)
         if self._format == "mp3":
             return mp3
-        return await self._transcode(mp3)
+        return await transcode(mp3, self._format, self._ffmpeg)
 
     async def _render_mp3(
         self, text: str, voice: str, emotion: Emotion,
@@ -135,23 +117,3 @@ class EdgeTTSEngine:
         if not buf:
             raise TTSError("edge-tts 返回空音频")
         return bytes(buf)
-
-    async def _transcode(self, mp3: bytes) -> bytes:
-        codec, container = _TRANSCODE[self._format]
-        args = [self._ffmpeg, "-i", "pipe:0", "-c:a", codec]
-        if self._format == "ogg":
-            args += ["-b:a", "64k"]
-        args += ["-f", container, "pipe:1", "-loglevel", "error"]
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *args,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        except FileNotFoundError as e:
-            raise TTSError(f"ffmpeg 不可用：{self._ffmpeg}") from e
-        out, err = await proc.communicate(input=mp3)
-        if proc.returncode != 0:
-            raise TTSError(f"ffmpeg 转码失败：{err.decode(errors='ignore')}")
-        return out
