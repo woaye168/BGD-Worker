@@ -1,4 +1,4 @@
-职责: SQLite 仓储与文件系统音频存储（含旧 JSON 一次性迁移）
-出口: SQLiteCharacterRepository, SQLiteDialogueRepository, FileSystemAudioStore
+职责: SQLite 仓储与文件系统音频存储（含旧 JSON 一次性迁移）+ 文件系统模型仓库
+出口: SQLiteCharacterRepository, SQLiteDialogueRepository, FileSystemAudioStore, FileSystemModelStore
 入口: ../contract
-子图: sqlite_repository:角色+对话同库持久化+JSON自动迁移, audio_store:音频文件落盘与检索
+子图: sqlite_repository:角色+对话同库持久化+JSON自动迁移, audio_store:音频文件落盘与检索, model_store:扫描 data_dir/models/<id>/ 含 meta.json 的模型目录

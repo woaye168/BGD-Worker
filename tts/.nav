@@ -1,4 +1,4 @@
-职责: TTS引擎适配（实现 contract.ports.TTSEngine）
-出口: EdgeTTSEngine, resolve_ffmpeg
+职责: TTS引擎适配（实现 contract.ports.TTSEngine）+ 模型 catalog 客户端 + 本地运行时安装器
+出口: EdgeTTSEngine, resolve_ffmpeg, GithubReleaseCatalog, LocalTTSRuntimeInstaller
 入口: ../contract, ../synthesis
-子图: edge_tts_engine:edge-tts合成+ffmpeg三级探测+OGG/MP3/WAV, 未来扩展:rest_engine(本地REST服务)
+子图: edge_tts_engine:edge-tts合成+ffmpeg三级探测+OGG/MP3/WAV, catalog_client:GitHub Release JSON+zip 流式下载(实现 ModelCatalog), runtime_installer:本地运行时按需下载+sha256校验+解压(仅 Windows; 实现 RuntimeInstaller), _download:stream_download/sha256_file(stdlib urllib 内部工具)
