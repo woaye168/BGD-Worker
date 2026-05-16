@@ -95,6 +95,7 @@ tr.drag-over-bottom td { box-shadow: inset 0 -2px 0 #1f6feb; }
   <nav>
     <button data-tab="dialogues" class="active">💬 对话合成</button>
     <button data-tab="characters">👤 角色管理</button>
+    <button data-tab="models">🎭 模型管理</button>
     <button data-tab="settings">⚙️ 软件设置</button>
   </nav>
 
@@ -150,6 +151,52 @@ tr.drag-over-bottom td { box-shadow: inset 0 -2px 0 #1f6feb; }
     </div>
   </section>
 
+  <!-- ============ 模型管理 ============ -->
+  <section id="models">
+    <div class="box">
+      <div class="panel-head">
+        <h2>本地 TTS 运行时</h2>
+        <span class="muted" id="rtStatusText">加载中…</span>
+      </div>
+      <div class="hint">💡 用 Edge TTS（云端）时无需安装；想用本地角色音色（如二次元角色克隆）才需要先在这里安装运行时。<strong>当前仅支持 Windows</strong>，其它平台暂不支持。</div>
+      <div class="row mb-2">
+        <button class="primary" id="rtInstallBtn">⬇ 安装本地 TTS 引擎</button>
+        <button class="danger" id="rtUninstallBtn">卸载</button>
+        <span class="muted" id="rtVersion"></span>
+      </div>
+      <div class="progress" id="rtProgressWrap" style="display:none"><div class="progress-bar" id="rtProgressBar"></div></div>
+      <div class="muted" id="rtMessage"></div>
+    </div>
+
+    <div class="box">
+      <div class="panel-head">
+        <h2>已安装模型</h2>
+        <button class="secondary" id="installedReload">刷新</button>
+      </div>
+      <div id="installedList"></div>
+    </div>
+
+    <div class="box">
+      <div class="panel-head">
+        <h2>在线模型 catalog</h2>
+        <button class="secondary" id="catalogReload">从远端刷新</button>
+      </div>
+      <div class="hint">💡 catalog URL 在「软件设置」页配置（GitHub Release 上的 JSON）。版权信息会在卡片上展示，下载前请自行确认授权。</div>
+      <div id="catalogList"></div>
+      <div class="progress" id="dlProgressWrap" style="display:none"><div class="progress-bar" id="dlProgressBar"></div></div>
+      <div class="muted" id="dlMessage"></div>
+    </div>
+
+    <div class="box">
+      <div class="panel-head"><h2>本地导入</h2></div>
+      <div class="hint">💡 把模型目录（须含 <span class="mono">meta.json</span> 与权重文件）打成 <span class="mono">.zip</span> 上传。系统会自动定位 meta.json 所在目录作为模型根。</div>
+      <div class="row mb-2">
+        <input type="file" id="modelImportFile" accept=".zip">
+        <button class="secondary" id="modelImportBtn">上传并导入</button>
+      </div>
+    </div>
+  </section>
+
   <!-- ============ 软件设置 ============ -->
   <section id="settings">
     <div class="box">
@@ -169,6 +216,45 @@ tr.drag-over-bottom td { box-shadow: inset 0 -2px 0 #1f6feb; }
             <option value="mp3">MP3</option>
             <option value="wav">WAV</option>
           </select>
+        </div>
+      </div>
+
+      <h3 style="font-size:13px;color:#8b949e;margin:14px 0 6px">TTS 引擎</h3>
+      <div class="row mb-2">
+        <div class="field tight" style="min-width:170px"><label>默认引擎（voice 无前缀时回落）</label>
+          <select id="setEngine">
+            <option value="edge">Edge TTS（云端，免装）</option>
+            <option value="local">本地（GPT-SoVITS 等）</option>
+          </select>
+        </div>
+        <div class="field tight" style="min-width:170px"><label>本地引擎后端</label>
+          <select id="setLocalBackend">
+            <option value="auto">自动</option>
+            <option value="cuda">CUDA（NVIDIA）</option>
+            <option value="directml">DirectML（AMD/Intel/NPU）</option>
+            <option value="cpu">CPU</option>
+          </select>
+        </div>
+      </div>
+      <div class="row mb-2">
+        <div class="field"><label>模型 catalog URL（GitHub Release 上的 JSON；同时供运行时清单使用）</label>
+          <input id="setCatalogUrl" placeholder="https://github.com/<owner>/<repo>/releases/download/<tag>/catalog.json">
+        </div>
+      </div>
+
+      <h3 style="font-size:13px;color:#8b949e;margin:14px 0 6px">AI 对话生成（远期，未启用，仅占位）</h3>
+      <div class="row mb-2">
+        <div class="field tight" style="min-width:130px"><label>provider</label>
+          <input id="setAiProvider" placeholder="openai / claude / ...">
+        </div>
+        <div class="field"><label>base URL</label>
+          <input id="setAiBaseUrl" placeholder="https://api.openai.com/v1">
+        </div>
+        <div class="field tight" style="min-width:200px"><label>API key</label>
+          <input id="setAiApiKey" type="password" placeholder="sk-...（仅本地存储）">
+        </div>
+        <div class="field tight" style="min-width:140px"><label>model</label>
+          <input id="setAiModel" placeholder="gpt-4o-mini">
         </div>
       </div>
 
@@ -225,7 +311,33 @@ const state = {
   selectedIds: new Set(),
   search: '',
   dragSrcId: null,
+  models: { installed: [], catalog: [], runtime: { installed: false, version: null } },
 };
+
+const ENGINE_LABELS = { edge: '☁️ Edge TTS', local: '🎭 本地角色' };
+
+// 把存量裸 voice id (如 "zh-CN-XiaoxiaoNeural") 视为 edge: 前缀
+function normalizeVoiceId(v) {
+  if (!v) return '';
+  return v.includes(':') ? v : ('edge:' + v);
+}
+
+// 在 state.voices 中按 full_id 或裸 id 查 voice 条目
+function findVoice(idOrFullId) {
+  if (!idOrFullId) return null;
+  const norm = normalizeVoiceId(idOrFullId);
+  return state.voices.find(v => v.full_id === norm)
+      || state.voices.find(v => v.id === idOrFullId)
+      || null;
+}
+
+// 给字段值生成展示用文本（angular brackets show engine + name）
+function voiceLabel(voiceId) {
+  const v = findVoice(voiceId);
+  if (!v) return voiceId || '(未设置)';
+  const engine = ENGINE_LABELS[v.engine] || v.engine || '?';
+  return `${v.name || v.id} · ${engine}`;
+}
 let synthController = null;
 let playback = null;  // { audio, cancelled, sceneKey }
 
@@ -302,6 +414,7 @@ document.querySelectorAll('nav button').forEach(btn => {
     btn.classList.add('active');
     $('#' + btn.dataset.tab).classList.add('active');
     if (btn.dataset.tab === 'settings') loadSettings().catch(e => toast(e.message, 'error'));
+    if (btn.dataset.tab === 'models') loadModels().catch(e => toast(e.message, 'error'));
   });
 });
 
@@ -335,7 +448,7 @@ function renderCharacters() {
     <div class="card">
       <div class="row">
         <div class="field tight" style="min-width:150px"><label>角色名</label><strong>${escapeHtml(c.name)}</strong></div>
-        <div class="field"><label>音色</label><span class="mono">${escapeHtml(c.voice)}</span></div>
+        <div class="field"><label>音色</label><span>${escapeHtml(voiceLabel(c.voice))}</span></div>
         <div class="field tight" style="min-width:60px"><label>语速</label>${c.rate.toFixed(2)}</div>
         <div class="field tight" style="min-width:60px"><label>音调</label>${c.pitch.toFixed(2)}</div>
         <div class="field tight" style="min-width:60px"><label>音量</label>${c.volume.toFixed(2)}</div>
@@ -398,20 +511,42 @@ function refreshVoiceOptions(currentVoice) {
   const kw = $('#cVoiceSearch').value.trim().toLowerCase();
   const filtered = state.voices.filter(v =>
     (!lang || v.lang === lang) &&
-    (!kw || v.id.toLowerCase().includes(kw) || (v.name || '').toLowerCase().includes(kw)));
+    (!kw || (v.id || '').toLowerCase().includes(kw)
+        || (v.name || '').toLowerCase().includes(kw)
+        || (v.character || '').toLowerCase().includes(kw)));
+  // 按 engine 分组（保留聚合顺序：edge → local → 其它）
+  const groups = {};
+  for (const v of filtered) {
+    const k = v.engine || 'edge';
+    (groups[k] = groups[k] || []).push(v);
+  }
+  const order = ['edge', 'local', ...Object.keys(groups).filter(k => k !== 'edge' && k !== 'local')];
+  const currentFull = normalizeVoiceId(currentVoice);
   const sel = $('#cVoice');
-  sel.innerHTML = filtered.map(v =>
-    `<option value="${escapeHtml(v.id)}" ${v.id === currentVoice ? 'selected' : ''}>${escapeHtml(v.name)} · ${escapeHtml(v.lang)} ${v.gender ? '· ' + escapeHtml(v.gender) : ''}</option>`).join('');
-  if (!sel.value && filtered.length) sel.value = filtered[0].id;
+  sel.innerHTML = order.filter(k => groups[k] && groups[k].length).map(k => {
+    const label = ENGINE_LABELS[k] || k;
+    const opts = groups[k].map(v => {
+      const val = v.full_id || (`${k}:${v.id}`);
+      const sub = v.character ? ' · ' + escapeHtml(v.character)
+                 : (v.gender ? ' · ' + escapeHtml(v.gender) : '');
+      const langPart = v.lang ? ` · ${escapeHtml(v.lang)}` : '';
+      return `<option value="${escapeHtml(val)}" ${val === currentFull ? 'selected' : ''}>${escapeHtml(v.name || v.id)}${langPart}${sub}</option>`;
+    }).join('');
+    return `<optgroup label="${escapeHtml(label)}">${opts}</optgroup>`;
+  }).join('');
+  if (!sel.value && filtered.length) {
+    const first = filtered[0];
+    sel.value = first.full_id || `${first.engine || 'edge'}:${first.id}`;
+  }
   $('#cVoiceCount').textContent = `${filtered.length} / ${state.voices.length} 个音色`;
 }
 
 function openCharacterForm(c = null) {
   openModal(characterFormHtml(c));
-  const initialVoice = c?.voice || 'zh-CN-XiaoxiaoNeural';
+  const initialVoice = c?.voice || 'edge:zh-CN-XiaoxiaoNeural';
   if (c?.voice) {
-    const v = state.voices.find(x => x.id === c.voice);
-    if (v) $('#cLang').value = v.lang;
+    const v = findVoice(c.voice);
+    if (v && v.lang) $('#cLang').value = v.lang;
   }
   refreshVoiceOptions(initialVoice);
   $('#cLang').addEventListener('change', () => refreshVoiceOptions($('#cVoice').value));
@@ -1101,6 +1236,13 @@ async function loadSettings() {
   $('#setLogLevel').value = r.settings.log.level || 'info';
   $('#setLogToFile').checked = !!r.settings.log.to_file;
   $('#setOutputFormat').value = r.settings.tts.output_format || 'ogg';
+  $('#setEngine').value = r.settings.tts.engine || 'edge';
+  $('#setLocalBackend').value = (r.settings.tts.local && r.settings.tts.local.backend) || 'auto';
+  $('#setCatalogUrl').value = (r.settings.tts.catalog && r.settings.tts.catalog.url) || '';
+  $('#setAiProvider').value = (r.settings.ai && r.settings.ai.provider) || '';
+  $('#setAiBaseUrl').value = (r.settings.ai && r.settings.ai.base_url) || '';
+  $('#setAiApiKey').value = (r.settings.ai && r.settings.ai.api_key) || '';
+  $('#setAiModel').value = (r.settings.ai && r.settings.ai.model) || '';
 }
 
 async function saveSettings() {
@@ -1111,13 +1253,26 @@ async function saveSettings() {
       level: $('#setLogLevel').value,
       to_file: $('#setLogToFile').checked,
     },
-    tts: { output_format: $('#setOutputFormat').value },
+    tts: {
+      engine: $('#setEngine').value,
+      output_format: $('#setOutputFormat').value,
+      local: { backend: $('#setLocalBackend').value },
+      catalog: { url: $('#setCatalogUrl').value.trim() },
+    },
+    ai: {
+      provider: $('#setAiProvider').value.trim(),
+      base_url: $('#setAiBaseUrl').value.trim(),
+      api_key: $('#setAiApiKey').value,
+      model: $('#setAiModel').value.trim(),
+    },
   };
   const btn = $('#setSave');
   btn.disabled = true;
   try {
     await api('/api/settings', { method: 'PUT', body: JSON.stringify(patch) });
     await loadSettings();
+    // catalog URL 改了 → 重新拉 voice 列表（dispatch 已重建）
+    try { state.voices = await api('/api/characters/voices/available'); } catch (_) {}
     toast('设置已保存并应用', 'success');
   } catch (e) { toast('保存失败：' + e.message, 'error'); }
   finally { btn.disabled = false; }
@@ -1125,6 +1280,216 @@ async function saveSettings() {
 
 $('#setSave').addEventListener('click', saveSettings);
 $('#setReload').addEventListener('click', () => loadSettings().catch(e => toast(e.message, 'error')));
+
+/* ================= 模型管理 ================= */
+
+function bytesHuman(n) {
+  if (!n) return '—';
+  const u = ['B','KB','MB','GB','TB'];
+  let i = 0; let v = n;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return `${v.toFixed(v >= 100 ? 0 : 1)} ${u[i]}`;
+}
+
+function modelCard(m, kind /* 'installed' | 'catalog' */) {
+  const lic = m.license
+    ? (m.license_url
+        ? `<a class="mono" href="${escapeHtml(m.license_url)}" target="_blank" rel="noopener">${escapeHtml(m.license)}</a>`
+        : `<span class="mono">${escapeHtml(m.license)}</span>`)
+    : '<span class="muted">未声明</span>';
+  const character = m.character ? `<span class="muted">· ${escapeHtml(m.character)}</span>` : '';
+  const size = m.size_bytes ? `<span class="muted">${bytesHuman(m.size_bytes)}</span>` : '';
+  const action = kind === 'installed'
+    ? `<button class="danger" data-model-act="delete" data-id="${escapeHtml(m.id)}">删除</button>`
+    : `<button class="primary" data-model-act="download" data-id="${escapeHtml(m.id)}">下载</button>`;
+  return `
+    <div class="card">
+      <div class="row">
+        <div class="field" style="min-width:240px">
+          <label>${escapeHtml(m.engine || 'local')} · ${escapeHtml(m.source || kind)}</label>
+          <strong>${escapeHtml(m.name || m.id)}</strong> ${character}
+        </div>
+        <div class="field tight" style="min-width:120px"><label>语言</label>${escapeHtml(m.language || '—')}</div>
+        <div class="field tight" style="min-width:140px"><label>版权</label>${lic}</div>
+        <div class="field tight" style="min-width:80px"><label>大小</label>${size}</div>
+        <div class="field tight"><label>&nbsp;</label>${action}</div>
+      </div>
+      ${m.description ? `<div class="muted" style="margin-top:6px">${escapeHtml(m.description)}</div>` : ''}
+    </div>`;
+}
+
+async function renderRuntime() {
+  const r = await api('/api/models/runtime/status');
+  state.models.runtime = { installed: !!r.installed, version: r.version || null };
+  if (r.installed) {
+    $('#rtStatusText').textContent = `已安装 · 版本 ${r.version || '未知'}`;
+    $('#rtInstallBtn').disabled = true;
+    $('#rtUninstallBtn').disabled = false;
+    $('#rtVersion').textContent = '';
+  } else {
+    $('#rtStatusText').textContent = '未安装';
+    $('#rtInstallBtn').disabled = false;
+    $('#rtUninstallBtn').disabled = true;
+    $('#rtVersion').textContent = '';
+  }
+}
+
+async function renderInstalled() {
+  const list = await api('/api/models/installed');
+  state.models.installed = list;
+  const el = $('#installedList');
+  if (!list.length) {
+    el.innerHTML = '<div class="empty"><h3>暂无已安装模型</h3><div>从下方在线 catalog 下载，或导入本地 .zip。</div></div>';
+    return;
+  }
+  el.innerHTML = list.map(m => modelCard(m, 'installed')).join('');
+  el.querySelectorAll('button[data-model-act="delete"]').forEach(b => {
+    b.addEventListener('click', () => deleteModel(b.dataset.id));
+  });
+}
+
+async function renderCatalog() {
+  const el = $('#catalogList');
+  el.innerHTML = '<div class="muted">加载中…</div>';
+  let list = [];
+  try {
+    list = await api('/api/models/catalog');
+  } catch (e) {
+    el.innerHTML = `<div class="empty"><h3>无法拉取 catalog</h3><div>${escapeHtml(e.message)}</div><div class="muted" style="margin-top:8px">请到「软件设置」配置 catalog URL。</div></div>`;
+    return;
+  }
+  state.models.catalog = list;
+  if (!list.length) {
+    el.innerHTML = '<div class="empty"><h3>catalog 为空</h3></div>';
+    return;
+  }
+  el.innerHTML = list.map(m => modelCard(m, 'catalog')).join('');
+  el.querySelectorAll('button[data-model-act="download"]').forEach(b => {
+    b.addEventListener('click', () => downloadModel(b.dataset.id, b));
+  });
+}
+
+async function loadModels() {
+  await Promise.all([renderRuntime(), renderInstalled(), renderCatalog()]);
+}
+
+async function deleteModel(id) {
+  if (!confirm(`确定删除模型 ${id}？`)) return;
+  try {
+    await api(`/api/models/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    state.voices = await api('/api/characters/voices/available');
+    await renderInstalled();
+    toast('已删除', 'success');
+  } catch (e) { toast('删除失败：' + e.message, 'error'); }
+}
+
+// 共用：消费 SSE 流，progressBar/msgEl 是 DOM
+async function consumeSSE(response, progressBar, msgEl) {
+  const reader = response.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  let lastEvt = null;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf('\n\n')) !== -1) {
+      const block = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      const line = block.split('\n').find(l => l.startsWith('data: '));
+      if (!line) continue;
+      let evt;
+      try { evt = JSON.parse(line.slice(6)); } catch (_) { continue; }
+      lastEvt = evt;
+      if (progressBar && typeof evt.percent === 'number') {
+        progressBar.style.width = evt.percent + '%';
+      }
+      if (msgEl) {
+        const msg = evt.message || (
+          evt.phase === 'downloading' && typeof evt.percent === 'number'
+            ? `下载中 ${evt.percent.toFixed(1)}% (${bytesHuman(evt.received)}${evt.total ? '/' + bytesHuman(evt.total) : ''})`
+            : evt.phase || '');
+        msgEl.textContent = msg;
+      }
+      if (evt.phase === 'error') throw new Error(evt.message || '未知错误');
+      if (evt.phase === 'done') return evt;
+    }
+  }
+  return lastEvt;
+}
+
+async function downloadModel(id, btn) {
+  if (btn) btn.disabled = true;
+  $('#dlProgressWrap').style.display = '';
+  $('#dlProgressBar').style.width = '0%';
+  $('#dlMessage').textContent = '开始下载…';
+  try {
+    const r = await fetch(`/api/models/download/${encodeURIComponent(id)}`, { method: 'POST' });
+    await consumeSSE(r, $('#dlProgressBar'), $('#dlMessage'));
+    state.voices = await api('/api/characters/voices/available');
+    await renderInstalled();
+    toast(`模型 ${id} 下载完成`, 'success');
+  } catch (e) {
+    toast('下载失败：' + e.message, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+    setTimeout(() => { $('#dlProgressWrap').style.display = 'none'; }, 1500);
+  }
+}
+
+async function importModel() {
+  const fileInput = $('#modelImportFile');
+  if (!fileInput.files.length) return toast('请先选择 .zip 文件', 'error');
+  const fd = new FormData();
+  fd.append('file', fileInput.files[0]);
+  const btn = $('#modelImportBtn');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/models/import', { method: 'POST', body: fd });
+    if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+    state.voices = await api('/api/characters/voices/available');
+    await renderInstalled();
+    toast('导入成功', 'success');
+    fileInput.value = '';
+  } catch (e) {
+    toast('导入失败：' + e.message, 'error');
+  } finally { btn.disabled = false; }
+}
+
+async function installRuntime() {
+  if (!confirm('开始下载并安装本地 TTS 运行时（数据量可能 1-2 GB，需稳定网络）。继续？')) return;
+  $('#rtInstallBtn').disabled = true;
+  $('#rtProgressWrap').style.display = '';
+  $('#rtProgressBar').style.width = '0%';
+  $('#rtMessage').textContent = '开始…';
+  try {
+    const r = await fetch('/api/models/runtime/install', { method: 'POST' });
+    await consumeSSE(r, $('#rtProgressBar'), $('#rtMessage'));
+    await renderRuntime();
+    toast('本地 TTS 运行时安装完成', 'success');
+  } catch (e) {
+    toast('安装失败：' + e.message, 'error');
+    $('#rtInstallBtn').disabled = false;
+  } finally {
+    setTimeout(() => { $('#rtProgressWrap').style.display = 'none'; }, 1500);
+  }
+}
+
+async function uninstallRuntime() {
+  if (!confirm('确定卸载本地 TTS 运行时？已下载的模型不会被删除。')) return;
+  try {
+    await api('/api/models/runtime/uninstall', { method: 'POST' });
+    await renderRuntime();
+    toast('运行时已卸载', 'success');
+  } catch (e) { toast('卸载失败：' + e.message, 'error'); }
+}
+
+$('#installedReload').addEventListener('click', () => renderInstalled().catch(e => toast(e.message, 'error')));
+$('#catalogReload').addEventListener('click', () => renderCatalog().catch(e => toast(e.message, 'error')));
+$('#modelImportBtn').addEventListener('click', importModel);
+$('#rtInstallBtn').addEventListener('click', installRuntime);
+$('#rtUninstallBtn').addEventListener('click', uninstallRuntime);
 
 /* ================= init ================= */
 (async () => {
