@@ -56,9 +56,13 @@ jobs:
       - name: 打包 dist 为 zip
         shell: pwsh
         run: |
-          $version = "${{ github.ref_name }}"
-          if (-not $version -or $version -eq "main") { $version = "manual-$(Get-Date -Format yyyyMMdd-HHmmss)" }
+          $raw = "${{ github.ref_name }}"
+          # 净化路径不安全字符: \ / : * ? " < > | (workflow_dispatch 时 ref_name 可能含 / 如 claude/xxx)
+          # 同时也避免 GitHub artifact 名禁用字符
+          $version = $raw -replace '[\\/:*?"<>|]', '-'
+          if (-not $version) { $version = "manual-$(Get-Date -Format yyyyMMdd-HHmmss)" }
           $zip = "NPC-Voice-Gen-windows-x64-$version.zip"
+          Write-Host "ref_name(raw)=$raw  sanitized=$version  zip=$zip"
           Compress-Archive -Path dist/NPC-Voice-Gen -DestinationPath $zip -CompressionLevel Optimal
           echo "ZIP_PATH=$zip" >> $env:GITHUB_ENV
           echo "ZIP_NAME=$zip" >> $env:GITHUB_ENV
