@@ -1,0 +1,4 @@
+职责: 本地 TTS 运行时进程内代码（嵌入到 data_dir/runtimes/local-tts/ 中跑，与主 app 进程隔离）
+出口: serve:main, synthesize_wav, detect_backend
+入口: 无（独立子进程；不依赖主 app 的 contract/api 层）
+子图: serve:FastAPI HTTP server 入口(GET /health, POST /synthesize, 懒加载模型, --mock 模式返回静默 WAV 供 IPC 测试)

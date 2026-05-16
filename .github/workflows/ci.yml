@@ -56,6 +56,7 @@ jobs:
               "storage.sqlite_repository", "storage.audio_store", "storage.model_store",
               "tts.edge_tts_engine", "tts.local_engine", "tts.dispatch_engine",
               "tts.catalog_client", "tts.runtime_installer", "tts._ffmpeg", "tts._download",
+              "tts.runtime.serve",
               "api.deps", "api.app", "api.logging_setup", "api.routes_settings",
               "api.routes_character", "api.routes_dialogue", "api.routes_synthesis",
               "api.routes_models",
@@ -92,4 +93,26 @@ jobs:
           done
           curl -sf http://127.0.0.1:8000/api/characters
           curl -sf -o /dev/null -w 'index.html -> HTTP %{http_code}\n' http://127.0.0.1:8000/
+          kill $pid
+
+      - name: 校验本地 TTS runtime serve.py（mock 模式）
+        run: |
+          mkdir -p /tmp/runtime-models-empty
+          uv run python -m tts.runtime.serve --port 18765 --model-root /tmp/runtime-models-empty --mock &
+          pid=$!
+          for i in $(seq 1 20); do
+            curl -sf http://127.0.0.1:18765/health >/dev/null && break
+            sleep 1
+          done
+          # /health 必须 ready 且 mock=true
+          curl -sf http://127.0.0.1:18765/health | tee /tmp/health.json
+          grep -q '"status":"ready"' /tmp/health.json
+          grep -q '"mock":true' /tmp/health.json
+          # /synthesize 返回 WAV bytes（RIFF/WAVE header）
+          curl -sf -X POST -H 'Content-Type: application/json' \
+            -d '{"text":"测试","model_id":"any-id"}' \
+            http://127.0.0.1:18765/synthesize -o /tmp/out.wav
+          test -s /tmp/out.wav
+          head -c 4 /tmp/out.wav | grep -q 'RIFF'
+          echo "serve.py mock 模式 IPC 链路通"
           kill $pid

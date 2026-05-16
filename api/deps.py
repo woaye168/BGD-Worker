@@ -142,7 +142,19 @@ def get_orchestrator() -> SynthesisOrchestrator:
 
 
 def invalidate_caches() -> None:
-    """设置/模型变更后清空所有 lru_cache 单例，强制下次访问按新状态重建。"""
+    """设置/模型变更后清空所有 lru_cache 单例，强制下次访问按新状态重建。
+
+    先尽力 close 当前 tts engine（关闭本地 TTS runtime 子进程等），再 clear lru_cache。
+    """
+    # 仅当 lru_cache 已有缓存时才取（避免空 clear 副作用：构造一个新实例又丢弃）
+    if get_tts_engine.cache_info().currsize > 0:
+        try:
+            close = getattr(get_tts_engine(), "close", None)
+            if callable(close):
+                close()
+        except Exception:
+            pass
+
     for fn in (
         get_config,
         get_character_repo,

@@ -1,24 +1,38 @@
 name: Release
 
-# 触发条件：推送 v 开头的 tag（如 v0.1.0）或手动触发。
-# 行为：在 windows-latest 上跑 PyInstaller 打包，产物以 zip 形式自动上传到 GitHub Release。
-# 仅支持 Windows（其他平台暂不发版，应用层会提示"暂不支持"）。
+# 触发条件：
+#  - v*           tag → 打包 app（PyInstaller） → 上传到对应 Release
+#  - runtime-v*   tag → 打包本地 TTS 运行时（Python embeddable + fastapi/uvicorn + serve.py） → 上传到对应 Release
+#  - workflow_dispatch：手动选择 target=app 或 target=runtime
+# 行为：均在 windows-latest 上跑；产物 zip 自动上传到 GitHub Release。
+# 仅支持 Windows（其他平台暂不发版）。
 on:
   push:
-    tags: ["v*"]
+    tags: ["v*", "runtime-v*"]
   workflow_dispatch:
     inputs:
       ref:
         description: "要打包的 ref（分支名或 commit），默认当前默认分支"
         required: false
         default: ""
+      target:
+        description: "打包目标"
+        required: false
+        default: "app"
+        type: choice
+        options: [app, runtime]
 
 permissions:
   contents: write  # softprops/action-gh-release 需写 Release
 
 jobs:
   build-windows:
-    name: 打包 Windows
+    name: 打包 Windows app
+    # app 打包：v* tag（含 runtime-v* 也以 v 结尾出现在中间，但 ref 是 refs/tags/runtime-v... 以 r 开头）
+    # 或 workflow_dispatch target!=runtime
+    if: |
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.event_name == 'workflow_dispatch' && inputs.target != 'runtime')
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -80,5 +94,82 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ env.ZIP_PATH }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+  build-runtime:
+    name: 打包本地 TTS 运行时
+    # runtime-v* tag 或 workflow_dispatch target=runtime
+    if: |
+      startsWith(github.ref, 'refs/tags/runtime-v') ||
+      (github.event_name == 'workflow_dispatch' && inputs.target == 'runtime')
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: 打包运行时
+        shell: bash
+        run: |
+          set -o pipefail
+          # ref_name 形如 runtime-v0.1.0 → 提取 0.1.0；workflow_dispatch 时退回时间戳
+          raw="${{ github.ref_name }}"
+          if [[ "$raw" == runtime-v* ]]; then
+            ver="${raw#runtime-v}"
+          else
+            ver="manual-$(date +%Y%m%d-%H%M%S)"
+          fi
+          echo "RUNTIME_VERSION=$ver" >> $GITHUB_ENV
+          uv run python scripts/build_runtime.py --version "$ver" --out dist 2>&1 | tee build_runtime.log
+
+      - name: 失败诊断
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo "## 运行时打包失败诊断"
+            echo "### build_runtime.py 输出（末 200 行）"
+            echo '```'
+            tail -n 200 build_runtime.log 2>/dev/null || echo "(无 build_runtime.log)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 计算 sha256
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem dist/local-tts-runtime-v*.zip | Select-Object -First 1
+          $hash = (Get-FileHash -Algorithm SHA256 $zip.FullName).Hash.ToLower()
+          $size = $zip.Length
+          Write-Host "zip=$($zip.FullName)  sha256=$hash  size=$size"
+          echo "RUNTIME_ZIP_PATH=$($zip.FullName)" >> $env:GITHUB_ENV
+          echo "RUNTIME_ZIP_NAME=$($zip.Name)" >> $env:GITHUB_ENV
+          echo "RUNTIME_SHA256=$hash" >> $env:GITHUB_ENV
+          echo "RUNTIME_SIZE=$size" >> $env:GITHUB_ENV
+          # 写到 step summary 方便用户粘贴到 catalog.json
+          @"
+          ## 运行时元数据（供 catalog.json windows_x64 段使用）
+
+          - **download_url**: ``https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/$($zip.Name)``
+          - **sha256**: ``$hash``
+          - **size_bytes**: ``$size``
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+      - name: 作为 workflow artifact 备份（保 30 天）
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.RUNTIME_ZIP_NAME }}
+          path: ${{ env.RUNTIME_ZIP_PATH }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: 发布到 GitHub Release
+        if: startsWith(github.ref, 'refs/tags/runtime-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.RUNTIME_ZIP_PATH }}
           generate_release_notes: true
           fail_on_unmatched_files: true

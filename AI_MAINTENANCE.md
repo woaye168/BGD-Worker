@@ -5,17 +5,20 @@
 ## 项目概览
 
 - **栈**：UV (包管理) + FastAPI (HTTP) + Pydantic (类型) + SQLite (持久化, stdlib)
-  + edge-tts (云端 TTS) + 本地 TTS 引擎脚手架(GPT-SoVITS, 运行时按需下载, 仅 Win)
-  + stdlib urllib (catalog/运行时下载) + imageio-ffmpeg (捆绑 ffmpeg)
+  + edge-tts (云端 TTS) + 本地 TTS 引擎(主 app 侧子进程+HTTP 调 `tts/runtime/serve.py`，
+  GPT-SoVITS 实际推理由 runtime 包提供，运行时按需下载, 仅 Win)
+  + stdlib urllib (catalog/运行时下载 + 主↔runtime HTTP 通信) + imageio-ffmpeg (捆绑 ffmpeg)
   + pywebview (桌面窗口) + PyInstaller (打包) + Python stdlib logging (日志)
 - **架构**：三层依赖单向 DAG，`adapter → logic → contract`
 - **模块**：见根 `.nav` 的 `总览` 行
-- **入口**：`desktop.py` 桌面应用 / `main.py` 开发服务 / `build.py` 打包脚本
+- **入口**：`desktop.py` 桌面应用 / `main.py` 开发服务 / `build.py` 打包脚本 /
+  `scripts/build_runtime.py` 本地 TTS 运行时打包脚本（Win-only，CI 用）
 - **运行时根**：`AppConfig.data_dir` 派生 `app.db` / `audio/` / `logs/` / `settings.json` /
-  `models/<id>/` (模型) / `runtimes/local-tts/` (本地 TTS 运行时)
-- **CI**：`.github/workflows/ci.yml` (push 任意分支跑冒烟) + `release.yml`
-  (仅 `v*` tag 触发, runs-on windows-latest, PyInstaller 打包后自动发布到 GitHub Release;
-  其它平台暂不支持)
+  `models/<id>/` (模型) / `runtimes/local-tts/` (本地 TTS 运行时，含 `python/python.exe` +
+  `serve.py` + `VERSION`)
+- **CI**：`.github/workflows/ci.yml` (push 任意分支跑冒烟，含 serve.py --mock IPC 校验) +
+  `release.yml`: `v*` tag → PyInstaller 打 app，`runtime-v*` tag → `scripts/build_runtime.py`
+  打本地 TTS 运行时 zip。两者均在 windows-latest，自动上传到各自 Release；其它平台暂不发版。
 
 ## 工作模式判断
 
@@ -62,6 +65,17 @@
   让 dispatch 引擎与 voice 列表与新状态对齐
 - 本地 TTS 运行时仅支持 Windows（用户产品决策）；其它平台 `LocalTTSEngine.synthesize` /
   `LocalTTSRuntimeInstaller.install` 抛 `TTSError`/`ModelError` 含"暂不支持"友好提示
+- 本地 TTS 引擎是**主 app 进程 ↔ runtime 子进程**双进程架构：
+  - 主 app 侧 `tts/local_engine.py:LocalTTSEngine` 持有一个长驻 `subprocess.Popen` 实例，
+    首次 `synthesize` 时懒启动 runtime 子进程并轮询 `GET /health` 等就绪（≤30s），
+    之后所有合成请求复用同一子进程；进程崩溃后下次调用自动重启
+  - runtime 子进程入口 `tts/runtime/serve.py`：FastAPI HTTP server，`--mock` 模式返回静默 WAV
+    供 IPC 链路测试；真实 GPT-SoVITS 推理由 runtime 包按需接入
+  - `tts/runtime/` 子目录是**独立进程域**，不依赖主 app 的 `contract/` / `api/` 层；
+    禁止在主 app 模块中 `import tts.runtime.serve`（CI 校验导入仅为捕捉语法错误）
+  - 引擎清理：`DispatchTTSEngine.close()` 转发到 `LocalTTSEngine.close()` 终止子进程；
+    `api.deps:invalidate_caches()` 在 cache_clear 前调用 close 避免孤儿进程；
+    `atexit` 钩兜底进程退出时强杀残留 Popen
 - `Dialogue.audio_path` 为空 ⇔ 该对话从未合成 / 合成已失效（这是"仅未合成"筛选的唯一依据）
 - 编辑对话的 `text`/`emotion`/`character_id` 三个字段中任一 → 必须清空 `audio_path` 与 `synthesized_at`
 - 编辑角色配置 **不会** 自动失效已合成的对话音频；如需重生成请走 "全部" 范围批量合成
@@ -148,7 +162,27 @@
 2. `uv run python build.py` —— PyInstaller 单目录打包，产物在 `dist/NPC-Voice-Gen/`
 3. 必须在 Windows 本机执行（CI 仅在 windows-latest 跑；mac/linux 暂不支持发版）
 4. 开发期 Linux 可用 `python main.py` 浏览器模式调试（pywebview 需系统 GTK/WebKit）
-5. CI 触发：仅 `v*` tag 推送（见 `.github/workflows/release.yml`），打包后自动发布到 GitHub Release
+5. CI 触发：`v*` tag 推送（见 `.github/workflows/release.yml`），打包后自动发布到 GitHub Release
+
+### 打包本地 TTS 运行时 (Win 专属，独立于 app 发版)
+
+1. 仅 Windows 可跑（`scripts/build_runtime.py` 断言 `sys.platform == 'win32'`）
+2. `uv run python scripts/build_runtime.py --version <ver>` —— 下载 Python embeddable +
+   pip install fastapi/uvicorn/pydantic + 复制 `tts/runtime/serve.py` + 写 `VERSION` + 打 zip
+3. CI 触发：`runtime-v*` tag 推送（与 app 的 `v*` tag 分开发版），产物 zip 自动上传 Release
+4. **当前 runtime 包是"最小可用"版本**：仅含 `serve.py` 的 `--mock` 模式（返回静默 WAV）；
+   真实 GPT-SoVITS 推理由后续 PR 接入（需要在 `build_runtime.py` 中加 `pip install torch torch-directml`
+   + 拉 GPT-SoVITS 源码 + 在 `serve.py:_load_model` / `synthesize_wav` 中接入推理 API）
+5. zip 内层结构：`{VERSION, serve.py, python/python.exe + Lib/site-packages/...}`；
+   `LocalTTSRuntimeInstaller._extract_zip` 与 `LocalTTSEngine._ensure_runtime_running` 据此寻路
+
+### 改 runtime/serve.py 时
+
+1. `tts/runtime/` 是独立进程域：**不可** `import` 主 app 的 `contract/` / `api/` 层
+2. 所有非 stdlib 依赖必须懒导入（`_build_app` 内 import fastapi；`detect_backend` 内 import torch）
+   以便主 app 在 CI 冒烟时能 `import tts.runtime.serve` 验证语法而不强依赖运行时 deps
+3. HTTP API 形状如有变更，同步改 `tts/local_engine.py:_call_runtime` 的请求体与解析逻辑
+4. `--mock` 模式必须始终可用（CI 用它做 IPC 链路冒烟，不依赖 torch/GPT-SoVITS）
 
 ### 添加新的运行时设置项
 

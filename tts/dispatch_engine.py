@@ -1,7 +1,7 @@
 # @purpose: 多引擎分发 TTS（按 Character.voice 的 "engine:voice_id" 前缀分发到子引擎）
 # @layer: adapter
 # @contract:
-#   - DispatchTTSEngine(sub_engines).{output_extension, synthesize, list_voices}
+#   - DispatchTTSEngine(sub_engines).{output_extension, synthesize, list_voices, close}
 #   - parse_voice(voice) -> (engine, raw_voice)   # 模块级工具，供 routes 层复用
 # @depends:
 #   - logging (stdlib)
@@ -20,6 +20,8 @@
 #   - output_extension 返回 "edge" 子引擎的实际格式（兜底引擎；用户 settings.tts.output_format
 #     应让所有子引擎一致，否则跨引擎时落盘扩展名可能与 bytes 实际格式不符）
 #     ↑ 已知限制：缺 ffmpeg + 多引擎时格式可能漂移；Phase 2 处理
+#   - close() 转发到所有定义了 close() 的子引擎（duck typing），用于 invalidate_caches 前清理
+#     子进程等长驻资源；幂等，异常仅 warning 不打断
 
 from __future__ import annotations
 
@@ -88,3 +90,14 @@ class DispatchTTSEngine:
         if sub is None:
             raise TTSError(f"未知引擎前缀 '{engine_name}'，已注册: {list(self._sub.keys())}")
         return await sub.synthesize(text, raw_voice, emotion, rate, pitch, volume)
+
+    def close(self) -> None:
+        """转发到所有有 close() 的子引擎；幂等，异常忽略。"""
+        for engine_name, sub in self._sub.items():
+            close = getattr(sub, "close", None)
+            if not callable(close):
+                continue
+            try:
+                close()
+            except Exception as e:
+                logger.warning("子引擎 %s close 失败: %s", engine_name, e)
