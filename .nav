@@ -1,4 +1,4 @@
-职责: 游戏NPC情感语音生成器，多角色剧本导入→批量多格式合成→打包导出，可打包为桌面应用
-总览: 入口=desktop.py(桌面应用)/main.py(开发服务)/build.py(打包); 核心模块=contract,character,dialogue,synthesis,storage,tts,api
+职责: 游戏NPC情感语音生成器，多角色剧本导入→批量多格式合成→打包导出，可打包为桌面应用；支持多 TTS 引擎与本地模型管理
+总览: 入口=desktop.py(桌面应用)/main.py(开发服务)/build.py(打包); 核心模块=contract,character,dialogue,synthesis,storage,tts,api; CI=.github/workflows/(ci.yml 冒烟+release.yml v* tag 打包)
 入口: 无（顶级模块）
-子图: contract:领域类型+端口协议+应用配置(含日志/设置), character:角色CRUD, dialogue:对话与剧本/CSV/JSON导入, synthesis:合成编排+情感映射+ZIP导出, storage:SQLite仓储+音频文件存储+旧JSON自动迁移, tts:TTS引擎适配(edge-tts/ffmpeg多格式), api:FastAPI HTTP接口+全局日志+运行时设置
+子图: contract:领域类型+端口协议+应用配置(含 TTS 子设置/catalog/AI/日志)+TTSModel+ModelStore/ModelCatalog/RuntimeInstaller Protocol+ModelError, character:角色CRUD, dialogue:对话与剧本/CSV/JSON导入, synthesis:合成编排+情感映射+ZIP导出, storage:SQLite仓储+音频文件存储+模型仓库(扫描 data_dir/models)+旧JSON自动迁移, tts:多引擎分发(DispatchTTSEngine 按 voice 前缀路由)+edge-tts+本地引擎脚手架+catalog 客户端(GitHub Release JSON)+运行时安装器(仅 Win)+ffmpeg共享工具, api:FastAPI HTTP接口+全局日志+运行时设置+模型管理路由(SSE 下载/zip 导入/运行时安装卸载)

@@ -32,6 +32,13 @@ jobs:
               "/api/dialogues/import",
               "/api/synthesis/batch/stream",
               "/api/synthesis/export",
+              "/api/models/installed",
+              "/api/models/catalog",
+              "/api/models/import",
+              "/api/models/download/{id}",
+              "/api/models/runtime/status",
+              "/api/models/runtime/install",
+              "/api/models/runtime/uninstall",
           ]
           for need in required:
               assert need in paths, f"缺少路由: {need}"
@@ -46,9 +53,12 @@ jobs:
               "contract.models", "contract.config", "contract.ports", "contract.errors",
               "character.service", "dialogue.service", "dialogue.importer",
               "synthesis.orchestrator", "synthesis.emotion_mapper", "synthesis.exporter",
-              "storage.sqlite_repository", "storage.audio_store",
-              "tts.edge_tts_engine", "api.deps", "api.app",
-              "api.logging_setup", "api.routes_settings",
+              "storage.sqlite_repository", "storage.audio_store", "storage.model_store",
+              "tts.edge_tts_engine", "tts.local_engine", "tts.dispatch_engine",
+              "tts.catalog_client", "tts.runtime_installer", "tts._ffmpeg", "tts._download",
+              "api.deps", "api.app", "api.logging_setup", "api.routes_settings",
+              "api.routes_character", "api.routes_dialogue", "api.routes_synthesis",
+              "api.routes_models",
           ]
           for m in mods:
               importlib.import_module(m)

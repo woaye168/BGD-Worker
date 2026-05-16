@@ -5,12 +5,17 @@
 ## 项目概览
 
 - **栈**：UV (包管理) + FastAPI (HTTP) + Pydantic (类型) + SQLite (持久化, stdlib)
-  + edge-tts (默认 TTS) + imageio-ffmpeg (捆绑 ffmpeg) + pywebview (桌面窗口) +
-  PyInstaller (打包) + Python stdlib logging (日志)
+  + edge-tts (云端 TTS) + 本地 TTS 引擎脚手架(GPT-SoVITS, 运行时按需下载, 仅 Win)
+  + stdlib urllib (catalog/运行时下载) + imageio-ffmpeg (捆绑 ffmpeg)
+  + pywebview (桌面窗口) + PyInstaller (打包) + Python stdlib logging (日志)
 - **架构**：三层依赖单向 DAG，`adapter → logic → contract`
 - **模块**：见根 `.nav` 的 `总览` 行
 - **入口**：`desktop.py` 桌面应用 / `main.py` 开发服务 / `build.py` 打包脚本
-- **运行时根**：`AppConfig.data_dir` 派生 `app.db` / `audio/` / `logs/` / `settings.json`
+- **运行时根**：`AppConfig.data_dir` 派生 `app.db` / `audio/` / `logs/` / `settings.json` /
+  `models/<id>/` (模型) / `runtimes/local-tts/` (本地 TTS 运行时)
+- **CI**：`.github/workflows/ci.yml` (push 任意分支跑冒烟) + `release.yml`
+  (仅 `v*` tag 触发, runs-on windows-latest, PyInstaller 打包后自动发布到 GitHub Release;
+  其它平台暂不支持)
 
 ## 工作模式判断
 
@@ -47,7 +52,16 @@
   - `{character, dialogue, synthesis}` (logic) → 仅 `contract`
   - 禁止反向、禁止 logic ↔ adapter 互引
 - TTS 引擎实现必须满足 `contract/ports.py:TTSEngine` Protocol，禁止在 `tts/*` 之外创建 TTS 子类
-- 仓储实现必须满足 `contract/ports.py` 中的 `*Repository` Protocol，禁止业务层直接读写 DB / 文件
+- 仓储实现必须满足 `contract/ports.py` 中的 `*Repository` / `ModelStore` Protocol，禁止业务层直接读写 DB / 文件
+- `Character.voice` 字符串语义：`"engine:raw_id"` 形式；无 `:` 视为 `edge:<raw_id>`
+  （向后兼容存量裸 voice id）。**剥前缀只发生在 `tts/dispatch_engine`**；
+  子引擎接收的 `voice` 已是裸 id，禁止子引擎自己解析 `:` 前缀
+- `api/deps.py:get_tts_engine` 返回的是 `DispatchTTSEngine`（含 edge + local 子引擎），
+  不是单一引擎；新增 TTS 引擎要进 `sub_engines` 字典而非取代它
+- 模型/运行时变更（下载/导入/删除/安装/卸载）后必须调 `api.deps:invalidate_caches()`，
+  让 dispatch 引擎与 voice 列表与新状态对齐
+- 本地 TTS 运行时仅支持 Windows（用户产品决策）；其它平台 `LocalTTSEngine.synthesize` /
+  `LocalTTSRuntimeInstaller.install` 抛 `TTSError`/`ModelError` 含"暂不支持"友好提示
 - `Dialogue.audio_path` 为空 ⇔ 该对话从未合成 / 合成已失效（这是"仅未合成"筛选的唯一依据）
 - 编辑对话的 `text`/`emotion`/`character_id` 三个字段中任一 → 必须清空 `audio_path` 与 `synthesized_at`
 - 编辑角色配置 **不会** 自动失效已合成的对话音频；如需重生成请走 "全部" 范围批量合成
@@ -68,8 +82,16 @@
   `importer` 本身保持纯函数、不触碰 `CharacterService`
 - 业务模块约定 `logger = logging.getLogger(__name__)`；setup_logging 由 `create_app()` 启动期调用，
   设置变更后 `routes_settings` 会再次调用以刷新 root handler；`enabled=False` 时 root level 设 CRITICAL+1（全静默）
-- 设置变更后必须调用 `api.deps:invalidate_caches()` 清空 lru_cache，否则单例（含 config/audio_store/tts）
-  会保留旧值；audio_dir_override 变更**只影响下次新合成的落盘位置**，既有 audio_path 不迁移
+- 设置变更后必须调用 `api.deps:invalidate_caches()` 清空 lru_cache，否则单例（含 config/audio_store/tts/
+  model_store/catalog/runtime_installer）会保留旧值；audio_dir_override 变更**只影响下次新合成的
+  落盘位置**，既有 audio_path 不迁移
+- 模型 catalog JSON 形状：`{"version": str, "windows_x64": {download_url, sha256, size_bytes},
+  "models": [{id, engine, name, character, license, download_url, sha256, size_bytes, ...}]}`；
+  `windows_x64` 段供 `RuntimeInstaller` 消费，`models` 段供 `ModelCatalog` 消费；
+  二者共用同一个 `tts.catalog.url`
+- 模型目录约定：`data_dir/models/<model_id>/` 必含 `meta.json`（id/engine/name 必填，
+  license/character/language 选填）；其余文件由 `FileSystemModelStore` 扫描记入 files/size_bytes，
+  以**目录名**为权威（覆盖 meta.json 中的 id 字段）
 
 ## 反模式
 
@@ -86,13 +108,23 @@
 
 ## 扩展指南
 
-### 添加新 TTS 引擎 (例如本地 REST 服务)
+### 添加新 TTS 引擎 (作为 dispatch 的新子引擎)
 
 1. 在 `tts/` 下新增文件，例如 `rest_engine.py`
-2. 实现 `contract/ports.py:TTSEngine` Protocol 的所有方法
-3. 在 `api/deps.py:get_tts_engine` 根据 `config.tts.engine` 字段分支选择
-4. 在 `contract/config.py:TTSSettings` 添加该引擎需要的字段（如 `rest_base_url`）
-5. 更新 `tts/.nav` 的"出口"行加入新引擎类名
+2. 实现 `contract/ports.py:TTSEngine` Protocol 的所有方法（output_extension / synthesize / list_voices）
+3. 在 `api/deps.py:get_tts_engine` 把新引擎实例加入 `DispatchTTSEngine` 的 `sub_engines` 字典
+   （用一个稳定的 key，如 `"rest"`；该 key 即是 `Character.voice` 用的引擎前缀）
+4. 在 `contract/config.py:TTSSettings` 添加该引擎需要的字段（如 `rest: RestSettings`）
+5. 更新 `tts/.nav` 的"出口"行 + `contract/.nav` 出口行（若加了 Settings 类型）
+6. **不要**改 `parse_voice` / dispatch 的解析规则；新前缀自动生效
+
+### 添加新模型源 (例如自有 HTTP 仓库)
+
+1. 在 `tts/` 下实现 `ModelCatalog` Protocol（参考 `tts/catalog_client.py`）
+2. 在 `api/deps.py:get_catalog` 根据用户设置切实例（当前默认 `GithubReleaseCatalog`）
+3. 在 catalog JSON 中提供 `models` 数组；每条至少含 `{id, name, download_url}`，
+   `sha256/size_bytes/license/...` 选填
+4. 模型 zip 内必须含 `meta.json`（同字段），下载流程自动校验
 
 ### 添加新情感
 
@@ -104,18 +136,19 @@
 
 ### 添加新音频格式
 
-1. 在 `tts/edge_tts_engine.py:_TRANSCODE` 加 `格式: (ffmpeg编码器, 容器)`
+1. 在 `tts/_ffmpeg.py:SUPPORTED_TRANSCODE` 加 `格式: (ffmpeg编码器, 容器)`
 2. 在 `tts/edge_tts_engine.py:EdgeTTSEngine.__init__` 的合法格式集合加入新值
-3. 在 `api/routes_synthesis.py:_MEDIA_TYPES` 与 `api/routes_character.py:_MEDIA_TYPES` 加 MIME 映射
-4. `contract/config.py:TTSSettings.output_format` 的注释取值范围同步更新
+3. 在 `tts/local_engine.py:LocalTTSEngine.__init__` 的格式分支同步处理
+4. 在 `api/routes_synthesis.py:_MEDIA_TYPES` 与 `api/routes_character.py:_MEDIA_TYPES` 加 MIME 映射
+5. `contract/config.py:TTSSettings.output_format` 的注释取值范围同步更新
 
-### 打包桌面应用
+### 打包桌面应用 (Win 专属)
 
 1. `uv sync` 安装运行时依赖（含 pywebview / imageio-ffmpeg）
 2. `uv run python build.py` —— PyInstaller 单目录打包，产物在 `dist/NPC-Voice-Gen/`
-3. 必须在目标 OS 本机执行：Windows 上得 Windows 包，macOS 上得 mac 包
-4. Linux 下 pywebview 需系统 GTK/WebKit 库；若缺失，可改用 `python main.py` 浏览器模式
-5. CI 自动在 windows/macos runner 上跑 PyInstaller（见 `.github/workflows/ci.yml`）
+3. 必须在 Windows 本机执行（CI 仅在 windows-latest 跑；mac/linux 暂不支持发版）
+4. 开发期 Linux 可用 `python main.py` 浏览器模式调试（pywebview 需系统 GTK/WebKit）
+5. CI 触发：仅 `v*` tag 推送（见 `.github/workflows/release.yml`），打包后自动发布到 GitHub Release
 
 ### 添加新的运行时设置项
 
