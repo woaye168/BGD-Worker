@@ -28,7 +28,7 @@
 #   - tts.engine 是"默认引擎"标记，仅当 Character.voice 无前缀时被使用（dispatch 兜底）
 #   - tts.local.backend ∈ {'auto','cuda','directml','cpu'}；'auto' 由 local_engine 启动期探测
 #   - tts.local.runtime_installed 表示本地 TTS 运行时是否已下载安装（用户在"模型管理"页触发）
-#   - tts.catalog.url 是模型目录的 GitHub Release JSON URL；空串表示未配置（UI 应提示去填）
+#   - tts.catalog.url 是模型目录/运行时 manifest 的 GitHub Release JSON URL；默认指向项目仓库 catalog.json（含运行时 windows_x64 元数据），用户仍可通过设置页覆盖
 #   - ai.provider/api_key 当前仅占位，未在合成路径使用（Phase 3 远期接入）
 #   - log.level ∈ {'debug','info','warning','error'}；变更需调 api.logging_setup.setup_logging 生效
 #   - load() 不存在或损坏时回退默认值，不抛异常；data_dir 始终来自 default_data_dir()，不从文件读
@@ -68,7 +68,9 @@ class LocalTTSSettings(BaseModel):
 class CatalogSettings(BaseModel):
     """在线模型 catalog 配置（GitHub Release JSON URL）。"""
 
-    url: str = ""
+    url: str = (
+        "https://raw.githubusercontent.com/woaye168/BGD-Worker/main/catalog.json"
+    )
     cache_ttl_sec: int = 3600
 
 
