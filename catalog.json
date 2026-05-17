@@ -1,24 +1,24 @@
 {
-  "version": "0.2.9",
+  "version": "0.3.0",
   "windows_x64": {
-    "download_url": "https://huggingface.co/woaye168/bgd-worker-npc-voice-gen-runtime/resolve/main/local-tts-runtime-v0.2.9.zip",
-    "size_bytes": 3995075377,
-    "sha256": "cc842ef9fc19d8a388e783f6bca55512d7ef30df62c62b15c7540fc013313f7f"
+    "download_url": "https://huggingface.co/woaye168/bgd-worker-npc-voice-gen-runtime/resolve/main/local-tts-runtime-cpu-v0.3.0.zip",
+    "size_bytes": 3995049636,
+    "sha256": "2b4a61dc50c0679860bb681628e0a5b110fd917c4d3a82cfad4b9822d0f89f03"
   },
   "windows_x64_cpu": {
-    "download_url": "",
-    "size_bytes": 0,
-    "sha256": ""
+    "download_url": "https://huggingface.co/woaye168/bgd-worker-npc-voice-gen-runtime/resolve/main/local-tts-runtime-cpu-v0.3.0.zip",
+    "size_bytes": 3995049636,
+    "sha256": "2b4a61dc50c0679860bb681628e0a5b110fd917c4d3a82cfad4b9822d0f89f03"
   },
   "windows_x64_amd_rocm": {
-    "download_url": "",
-    "size_bytes": 0,
-    "sha256": ""
+    "download_url": "https://huggingface.co/woaye168/bgd-worker-npc-voice-gen-runtime/resolve/main/local-tts-runtime-amd-rocm-v0.3.0.zip",
+    "size_bytes": 5430041738,
+    "sha256": "1c3c6b7c4bba2fc74ee183c049e9b050b59912f0d708c8e3c7a5b67c8313fd53"
   },
   "windows_x64_nvidia_cuda": {
-    "download_url": "",
-    "size_bytes": 0,
-    "sha256": ""
+    "download_url": "https://huggingface.co/woaye168/bgd-worker-npc-voice-gen-runtime/resolve/main/local-tts-runtime-nvidia-cuda-v0.3.0.zip",
+    "size_bytes": 6494097578,
+    "sha256": "bdd8359572d735871d7716e0acb84bf20a6d29318cb6f3821627b8c15f34430c"
   },
   "models": []
 }
