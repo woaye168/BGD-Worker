@@ -32,12 +32,19 @@
 #   - gradio 被 drop（webui 专用），但 tools/my_utils.py 在模块级 import gradio as gr，
 #     且 gr.Warning 被 check_for_existance / check_details 使用。给 gradio 建 stub：
 #     gr.Warning / gr.Error / gr.Info 变为 print，其余属性为 no-op。这样 load_audio 能正常走。
+#   - **GPT-SoVITS V4 上游硬编码 vocoder 路径**：TTS.py:608 写死了
+#     `%s/GPT_SoVITS/pretrained_models/gsv-v4-pretrained/vocoder.pth`，
+#     不受 TTS_Config 控制。因此打包时必须把 base_models/gsv-v4-pretrained/ 镜像一份到
+#     GPT_SoVITS/pretrained_models/gsv-v4-pretrained/，否则 pipeline init 报 FileNotFoundError。
+#     镜像整个目录（非仅 vocoder.pth），防止上游未来再加新硬编码权重。
 #   - 产物结构（profile=full）：
 #       <zip-root>/
 #         VERSION
 #         serve.py
 #         python/python.exe + Lib/site-packages/...（含 stub 模块）
 #         GPT_SoVITS/                    ← 从官方仓库克隆 tag 20250422v4
+#           pretrained_models/
+#             gsv-v4-pretrained/         ← 镜像自 base_models（硬编码路径需要）
 #         tools/                         ← 含 i18n/、audio_sr.py、AP_BWE_main/ 等
 #         base_models/
 #           chinese-roberta-wwm-ext-large/
@@ -523,6 +530,37 @@ def _verify_base_models(base_models_dir: Path) -> None:
     )
 
 
+def _mirror_v4_pretrained_for_hardcoded_paths(stage: Path, base_models: Path) -> None:
+    """GPT-SoVITS V4 在 TTS.py:608 硬编码了 vocoder 路径：
+
+        torch.load("%s/GPT_SoVITS/pretrained_models/gsv-v4-pretrained/vocoder.pth" % (now_dir,), ...)
+
+    该路径不受 TTS_Config 控制，因此必须在 GPT_SoVITS/pretrained_models/gsv-v4-pretrained/
+    也有一份。把 base_models/gsv-v4-pretrained/ 整个镜像过去，防止上游未来再加新硬编码。
+    """
+    src = base_models / "gsv-v4-pretrained"
+    if not src.exists():
+        logger.warning("base_models/gsv-v4-pretrained 不存在，跳过镜像")
+        return
+    dst = stage / "GPT_SoVITS" / "pretrained_models" / "gsv-v4-pretrained"
+    dst.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for f in src.iterdir():
+        if f.is_file():
+            dst_file = dst / f.name
+            if not dst_file.exists():
+                shutil.copy2(str(f), str(dst_file))
+                copied += 1
+    if copied:
+        logger.info(
+            "mirrored %d file(s) from base_models/gsv-v4-pretrained → "
+            "GPT_SoVITS/pretrained_models/gsv-v4-pretrained (for upstream hardcoded paths)",
+            copied,
+        )
+    else:
+        logger.info("GPT_SoVITS/pretrained_models/gsv-v4-pretrained already up-to-date")
+
+
 def _make_zip(src_dir: Path, out_zip: Path) -> None:
     """打包整个 src_dir 为 out_zip；zip 内路径以 src_dir 下相对路径计。"""
     logger.info("zip %s → %s", src_dir, out_zip)
@@ -669,6 +707,11 @@ def build(version: str, python_version: str, profile: str, out_dir: Path) -> Pat
             _pip_install(python_exe, _HF_DOWNLOAD_DEPS)
             base_models = stage / "base_models"
             _download_base_models(python_exe, base_models, tmp_path)
+
+            # 7b. GPT-SoVITS V4 上游硬编码了 vocoder 路径（TTS.py:608），
+            # 不受 TTS_Config 控制。把 base_models/gsv-v4-pretrained/ 镜像到
+            # GPT_SoVITS/pretrained_models/gsv-v4-pretrained/，否则 pipeline init 炸。
+            _mirror_v4_pretrained_for_hardcoded_paths(stage, base_models)
 
         # 8. 复制 serve.py 到 stage 根
         shutil.copy2(_SERVE_PY, stage / "serve.py")
