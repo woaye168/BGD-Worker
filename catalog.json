@@ -1,9 +1,9 @@
 {
-  "version": "0.2.0",
+  "version": "0.2.1",
   "windows_x64": {
-    "download_url": "https://huggingface.co/woaye168/bgd-worker-npc-voice-gen-runtime/resolve/main/local-tts-runtime-v0.2.0.zip",
-    "size_bytes": 0,
-    "sha256": ""
+    "download_url": "https://huggingface.co/woaye168/bgd-worker-npc-voice-gen-runtime/resolve/main/local-tts-runtime-v0.2.1.zip",
+    "size_bytes": 2465233108,
+    "sha256": "54c9fb0098b81264b21b8395b6d2580090933f41a093f1673a8063bd6d8e7729"
   },
   "models": []
 }
