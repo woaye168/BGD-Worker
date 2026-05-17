@@ -225,8 +225,10 @@ def _ensure_pipeline() -> object:
     # 此处先用 cpu 兜底保证可用性（AMD 用户落 CPU 模式仍能合成，只是较慢）。
 
     # V4 config（与 GPT-SoVITS 20250422v4 tag 的 tts_infer.yaml v4 段一致）
+    # TTS_Config 期望结构 {"version": "v4", "custom": {...}}，不是 {"default": {...}}
     config_dict = {
-        "default": {
+        "version": "v4",
+        "custom": {
             "device": device_str,
             "is_half": is_half,
             "version": "v4",
