@@ -2,7 +2,9 @@
 # @layer: build-tool (非 app 一部分)
 # @usage:
 #   python scripts/build_runtime.py [--version 1.0.0] [--python-version 3.10.11]
-#                                   [--profile {minimal,full}] [--out dist]
+#                                   [--profile {minimal,full}]
+#                                   [--target {cpu,amd-rocm,nvidia-cuda}] [--out dist]
+#                                   [--hf-repo <id>]
 # @output:
 #   dist/local-tts-runtime-v<version>.zip
 # @invariants:
@@ -11,11 +13,22 @@
 #     该版本只支持 Python 3.7-3.10；升级到 3.11+ 需等 GPT-SoVITS 上游解锁 numba
 #   - 默认 GPT-SoVITS clone 到 release tag 20250422v4，对齐 serve.py 的 V4 配置；
 #     与 base_models V4 (s1v3.ckpt + gsv-v4-pretrained/) 配套
-#   - profile=minimal：仅 fastapi+uvicorn+pydantic+serve.py（≈50MB；只能 --mock 模式跑）
-#   - profile=full（默认）：再加 torch(cpu) + 完整 GPT-SoVITS 源码 + V4 基础模型
-#     （BERT≈1.2GB + HuBERT≈400MB + s1v3.ckpt≈155MB + gsv-v4-pretrained/≈827MB；
-#      压缩后 zip ≈ 2.5-3GB，超 GitHub Release 单文件 2GB 上限 → 必须托管 HuggingFace
-#      （见批 3：scripts/build_runtime.py 加 HF 上传 step）
+#   - **多 target 变体**（--target 选择）：
+#     - cpu (default)：PyPI cpu torch wheel；所有机器兜底；zip ≈ 4GB
+#     - amd-rocm：ROCm 7 nightly Strix Halo gfx1151 (rocm.nightlies.amd.com/v2/gfx1151)；
+#       专门适配 AMD AI Max 395 / Radeon 8060S；zip ≈ 5-6GB
+#     - nvidia-cuda：PyTorch cu126 wheel；zip ≈ 6-7GB
+#     - torch 装好后 GPT-SoVITS 的 `device="cuda"` 代码不动：ROCm 透明 HIP 翻译；
+#       cuda 直接走。runtime/serve.py 内部完全 target-agnostic。
+#   - VERSION 文件格式 `<ver> <target>`（如 "0.3.0 amd-rocm"）；
+#     LocalTTSRuntimeInstaller 据此判断是否需重装（用户切了 target）。
+#     缺 target 字段视为 cpu（兼容旧 runtime 包）。
+#   - zip 文件名 `local-tts-runtime-<target>-v<ver>.zip`：与 catalog.json
+#     `windows_x64_<target>` 段对齐，HF 上自然分多文件
+#   - profile=minimal：仅 fastapi+uvicorn+pydantic+serve.py（≈50MB；只能 --mock 模式跑；target 无效）
+#   - profile=full（默认）：再加 torch(target wheel) + 完整 GPT-SoVITS 源码 + V4 基础模型
+#     （BERT≈1.2GB + HuBERT≈400MB + s1v3.ckpt≈155MB + gsv-v4-pretrained/≈827MB）。
+#     压缩后所有变体均超 GitHub Release 2GB 上限 → 必须托管 HuggingFace
 #   - GPT-SoVITS requirements.txt 经 _filter_requirements 过滤：drop pyopenjtalk(JA, 需 CMake)、
 #     jieba_fast(C ext)、opencc(C++ binding, 嵌入式 Python 缺开发库)、gradio*(webui)、
 #     faster-whisper/funasr(ASR)、modelscope、WeTextProcessing/pynini 等。
@@ -90,11 +103,22 @@ _MINIMAL_DEPS = [
 #   - pandas: tools/my_utils.py (load_audio 等工具)
 _SERVE_PY_INFER_DEPS = ["numpy", "soundfile", "matplotlib", "nltk", "pandas"]
 
-# CPU torch wheel（Windows x64，约 250MB；不含 CUDA）
-# 不指定具体版本：让 pip 解析最新稳定；如需固定可加 ==2.4.0
-# imageio-ffmpeg：为 GPT-SoVITS tools/my_utils.load_audio 提供 ffmpeg 二进制，
-# 避免依赖用户系统 PATH 中已安装 ffmpeg。
-_TORCH_DEPS = ["torch", "torchaudio", "imageio-ffmpeg"]
+# torch 安装由 _TORCH_DEPS_BY_TARGET 按 target 选择源：
+# - cpu: PyPI 默认 cpu wheel（Windows x64，约 250MB）
+# - amd-rocm: ROCm 7 Windows nightly，专门为 Strix Halo / AI Max 395 (gfx1151) 构建
+#   阶段 0 用户实测 torch 2.9.1+rocmsdk20260116 跑通 `torch.cuda.is_available() == True`
+#   + Radeon 8060S 上 10x 4096² matmul = 0.52s（CPU 30-60s，60-100× 加速原语）
+# - nvidia-cuda: PyTorch 官方 cu126 wheel（与 GPT-SoVITS install.sh CU126 对齐）
+# imageio-ffmpeg：为 GPT-SoVITS tools/my_utils.load_audio 提供 ffmpeg 二进制
+_TORCH_PACKAGES = ["torch", "torchaudio"]
+_AUX_TORCH_DEPS = ["imageio-ffmpeg"]
+
+_TORCH_INDEX_BY_TARGET = {
+    "cpu": ("https://download.pytorch.org/whl/cpu", "extra"),
+    "amd-rocm": ("https://rocm.nightlies.amd.com/v2/gfx1151/", "primary-pre"),
+    "nvidia-cuda": ("https://download.pytorch.org/whl/cu126", "extra"),
+}
+_VALID_TARGETS = tuple(_TORCH_INDEX_BY_TARGET.keys())
 
 # 下载基础模型的工具
 _HF_DOWNLOAD_DEPS = ["huggingface_hub"]
@@ -313,16 +337,53 @@ def _bootstrap_pip(python_dir: Path) -> Path:
     return python_exe
 
 
-def _pip_install(python_exe: Path, packages: list[str], *, extra_index: str | None = None) -> None:
+def _pip_install(
+    python_exe: Path,
+    packages: list[str],
+    *,
+    extra_index: str | None = None,
+    primary_index: str | None = None,
+    pre: bool = False,
+) -> None:
+    """pip install 通用入口。
+
+    extra_index: 加 --extra-index-url（PyPI 仍为主源，target 不在该 index 时回退 PyPI）
+    primary_index: 加 --index-url（**完全替代** PyPI；用于 ROCm nightly 这种独立 wheel 源）
+    pre: 加 --pre（允许 prerelease；ROCm nightly 需要）
+    """
     args = [
         str(python_exe), "-m", "pip", "install",
         "--no-warn-script-location",
-        *packages,
     ]
+    if pre:
+        args.append("--pre")
+    if primary_index:
+        args.extend(["--index-url", primary_index])
     if extra_index:
         args.extend(["--extra-index-url", extra_index])
-    logger.info("pip install: %s", " ".join(packages))
+    args.extend(packages)
+    logger.info(
+        "pip install: %s%s%s%s",
+        " ".join(packages),
+        f" --index-url {primary_index}" if primary_index else "",
+        f" --extra-index-url {extra_index}" if extra_index else "",
+        " --pre" if pre else "",
+    )
     subprocess.run(args, check=True)
+
+
+def _install_torch_for_target(python_exe: Path, target: str) -> None:
+    """按 target 装 torch + torchaudio + imageio-ffmpeg。"""
+    if target not in _TORCH_INDEX_BY_TARGET:
+        raise SystemExit(f"unknown target: {target}; valid: {_VALID_TARGETS}")
+    index_url, kind = _TORCH_INDEX_BY_TARGET[target]
+    if kind == "primary-pre":
+        # ROCm nightly：必须用 --index-url（独立 wheel 源，PyPI 没有这些版本）+ --pre
+        _pip_install(python_exe, _TORCH_PACKAGES, primary_index=index_url, pre=True)
+    else:
+        _pip_install(python_exe, _TORCH_PACKAGES, extra_index=index_url)
+    # imageio-ffmpeg 总从 PyPI 装（任何 target 都需要，不在 torch 索引里）
+    _pip_install(python_exe, _AUX_TORCH_DEPS)
 
 
 def _pip_install_requirements(python_exe: Path, requirements_file: Path) -> None:
@@ -799,7 +860,13 @@ def _upload_to_huggingface(
     return url
 
 
-def build(version: str, python_version: str, profile: str, out_dir: Path) -> Path:
+def build(
+    version: str,
+    python_version: str,
+    profile: str,
+    out_dir: Path,
+    target: str = "cpu",
+) -> Path:
     if sys.platform != "win32":
         raise SystemExit(
             f"build_runtime.py 仅支持 Windows（embeddable 是 Windows 专属），当前 {sys.platform}"
@@ -808,6 +875,8 @@ def build(version: str, python_version: str, profile: str, out_dir: Path) -> Pat
         raise SystemExit(f"serve.py 不存在：{_SERVE_PY}")
     if profile not in ("minimal", "full"):
         raise SystemExit(f"invalid profile: {profile}")
+    if target not in _VALID_TARGETS:
+        raise SystemExit(f"invalid target: {target}; valid: {_VALID_TARGETS}")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="local-tts-runtime-") as tmp:
@@ -832,13 +901,9 @@ def build(version: str, python_version: str, profile: str, out_dir: Path) -> Pat
         _pip_install(python_exe, _MINIMAL_DEPS)
 
         if profile == "full":
-            # 4. CPU torch + serve.py 推理依赖（numpy / soundfile / matplotlib / nltk / pandas）
-            #   显式 CPU index，避免拉到 CUDA 大轮子超 2GB Release 限制
-            _pip_install(
-                python_exe,
-                _TORCH_DEPS,
-                extra_index="https://download.pytorch.org/whl/cpu",
-            )
+            # 4. torch（按 target 选 wheel 源）+ serve.py 推理依赖
+            #    cpu: PyPI cpu wheel；amd-rocm: ROCm nightly gfx1151；nvidia-cuda: cu126
+            _install_torch_for_target(python_exe, target)
             _pip_install(python_exe, _SERVE_PY_INFER_DEPS)
 
             # 5. 克隆 GPT-SoVITS 源码到 stage 根（serve.py 用 sys.path.insert(runtime_root)）
@@ -905,17 +970,18 @@ def build(version: str, python_version: str, profile: str, out_dir: Path) -> Pat
         # 8. 复制 serve.py 到 stage 根
         shutil.copy2(_SERVE_PY, stage / "serve.py")
 
-        # 9. 写 VERSION
-        (stage / "VERSION").write_text(version, encoding="utf-8")
+        # 9. 写 VERSION：`<ver> <target>` 格式
+        #    LocalTTSRuntimeInstaller 解析时按空格切，未带 target 字段视为 'cpu'（兼容旧 runtime）
+        (stage / "VERSION").write_text(f"{version} {target}", encoding="utf-8")
 
-        # 10. zip
-        out_zip = out_dir / f"local-tts-runtime-v{version}.zip"
+        # 10. zip：文件名含 target 区分变体（与 catalog.json windows_x64_<target> 段对齐）
+        out_zip = out_dir / f"local-tts-runtime-{target}-v{version}.zip"
         if out_zip.exists():
             out_zip.unlink()
         _make_zip(stage, out_zip)
 
         size_mb = out_zip.stat().st_size / 1024 / 1024
-        logger.info("done: %s (%.1f MB) profile=%s", out_zip, size_mb, profile)
+        logger.info("done: %s (%.1f MB) profile=%s target=%s", out_zip, size_mb, profile, target)
         if size_mb > 2000:
             logger.info(
                 "zip > 2GB —— 已超 GitHub Release 单文件上限，必须用 --hf-repo 上传到 HuggingFace"
@@ -944,7 +1010,18 @@ def main(argv: list[str] | None = None) -> int:
         "--profile",
         choices=["minimal", "full"],
         default="full",
-        help="minimal=仅 serve.py 框架(≈50MB,仅 --mock 可用) / full=含 torch+GPT-SoVITS+基础模型(≈1.8GB)",
+        help="minimal=仅 serve.py 框架(≈50MB,仅 --mock 可用) / full=含 torch+GPT-SoVITS+基础模型",
+    )
+    parser.add_argument(
+        "--target",
+        choices=list(_VALID_TARGETS),
+        default="cpu",
+        help=(
+            "推理后端 target："
+            "cpu=PyPI CPU torch (≈4GB zip，所有机器兜底)；"
+            "amd-rocm=ROCm nightly Strix Halo gfx1151 (≈5-6GB，AMD AI Max 395)；"
+            "nvidia-cuda=cu126 wheel (≈6-7GB，N 卡)"
+        ),
     )
     parser.add_argument("--out", default="dist", help="输出目录")
     parser.add_argument(
@@ -968,8 +1045,10 @@ def main(argv: list[str] | None = None) -> int:
         python_version=args.python_version,
         profile=args.profile,
         out_dir=Path(args.out),
+        target=args.target,
     )
     print(f"OUTPUT={out}")
+    print(f"TARGET={args.target}")
 
     if args.hf_repo:
         hf_url = _upload_to_huggingface(
