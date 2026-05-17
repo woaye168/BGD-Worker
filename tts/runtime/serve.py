@@ -21,9 +21,14 @@
 #   - 真实推理：模块级懒导入 + 全局 Pipeline 单例 + 当前 voice id 缓存（切 model_id 时换权重）
 #   - /health 在模型未加载也能返回 ready；模型加载在第一次 /synthesize 触发
 #   - 端口必须由调用方指定（--port），不允许 0（自由端口需主 app 先 bind 抢占）
+#   - **runtime 仅支持 GPT-SoVITS V4 模型**：base_models 走 V4 路径
+#     （`s1v3.ckpt` + `gsv-v4-pretrained/s2Gv4.pth` + `chinese-roberta-wwm-ext-large/` + `chinese-hubert-base/`）。
+#     meta.json:gpt_sovits_version 非 v4 时合成报错引导用户换 V4 模型。
+#     V2/V3 模型支持留 future（需额外打 base models 包 + Pipeline 多实例缓存）。
 #   - 每个 voice 模型目录 (data_dir/models/<id>/) 必含 meta.json，至少声明：
 #       gpt_weights, sovits_weights, ref_audio, ref_text, ref_lang(默认 zh), text_lang(默认 zh)
-#     缺字段则按文件名约定回退（gpt.ckpt / sovits.pth / ref.wav）
+#     缺字段则按文件名约定回退（gpt.ckpt / sovits.pth / ref.wav）；
+#     gpt_sovits_version 默认 v4（与 runtime 版本对齐）
 
 from __future__ import annotations
 
@@ -114,7 +119,7 @@ def _read_meta(model_id: str) -> dict:
         "ref_text": meta.get("ref_text", ""),
         "ref_lang": meta.get("ref_lang", "zh"),
         "text_lang": meta.get("text_lang", "zh"),
-        "version": meta.get("gpt_sovits_version", "v2"),
+        "version": meta.get("gpt_sovits_version", "v4"),
     }
 
 
@@ -146,10 +151,15 @@ def _ensure_pipeline() -> object:
             f"base_models not found at {base_models}（runtime 包损坏？请重装）"
         )
 
-    # 检查关键 base models 文件 —— 早炸早知道，比 GPT-SoVITS 抛模糊错误强
+    # 检查关键 base models 文件 —— 早炸早知道，比 GPT-SoVITS 抛模糊错误强。
+    # V4 配置（与 GPT-SoVITS 20250422v4 tag 的 tts_infer.yaml `v4` 段对齐）：
+    #   t2s = s1v3.ckpt（V3+V4 共用 GPT 权重）
+    #   vits = gsv-v4-pretrained/s2Gv4.pth（V4 SoVITS 主权重，~769MB）
+    #   bert = chinese-roberta-wwm-ext-large/（V2/V3/V4 共用）
+    #   cnhubert = chinese-hubert-base/（V2/V3/V4 共用）
     required = [
-        base_models / "s1bert25hz-2kh-longer-epoch=68e-step=50232.ckpt",
-        base_models / "s2G488k.pth",
+        base_models / "s1v3.ckpt",
+        base_models / "gsv-v4-pretrained" / "s2Gv4.pth",
         base_models / "chinese-roberta-wwm-ext-large",
         base_models / "chinese-hubert-base",
     ]
@@ -214,21 +224,20 @@ def _ensure_pipeline() -> object:
     # DirectML 当前仍走 cpu 设备字符串；torch_directml 的真正接入需要 GPT-SoVITS 代码改造，
     # 此处先用 cpu 兜底保证可用性（AMD 用户落 CPU 模式仍能合成，只是较慢）。
 
+    # V4 config（与 GPT-SoVITS 20250422v4 tag 的 tts_infer.yaml v4 段一致）
     config_dict = {
         "default": {
             "device": device_str,
             "is_half": is_half,
-            "version": "v2",
-            "t2s_weights_path": str(
-                base_models / "s1bert25hz-2kh-longer-epoch=68e-step=50232.ckpt"
-            ),
-            "vits_weights_path": str(base_models / "s2G488k.pth"),
+            "version": "v4",
+            "t2s_weights_path": str(base_models / "s1v3.ckpt"),
+            "vits_weights_path": str(base_models / "gsv-v4-pretrained" / "s2Gv4.pth"),
             "bert_base_path": str(base_models / "chinese-roberta-wwm-ext-large"),
             "cnhuhbert_base_path": str(base_models / "chinese-hubert-base"),
         }
     }
     logger.info(
-        "init TTS_Config: backend=%s device=%s is_half=%s version=v2",
+        "init TTS_Config: backend=%s device=%s is_half=%s version=v4",
         _BACKEND, device_str, is_half,
     )
     try:
@@ -252,6 +261,13 @@ def _switch_voice(model_id: str) -> dict:
     """切到指定 model_id 的权重；返回该模型的 meta 信息（含路径）。"""
     global _CURRENT_VOICE
     meta = _read_meta(model_id)
+    # V4-only：meta.json 声明非 v4 时拒绝，引导用户换 V4 模型
+    if meta["version"] != "v4":
+        raise RuntimeError(
+            f"模型 {model_id} 声明 gpt_sovits_version={meta['version']!r}，"
+            f"本 runtime 仅支持 v4 模型；请去模型分享站找 V4 版本，或在 meta.json 改 "
+            f"gpt_sovits_version=\"v4\"（仅当确认该模型是 V4 训练时）"
+        )
     pipeline = _ensure_pipeline()
     if _CURRENT_VOICE != model_id:
         # 校验文件存在
