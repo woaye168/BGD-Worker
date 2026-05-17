@@ -564,6 +564,35 @@ def _patch_tools_my_utils_ffmpeg(stage: Path) -> None:
     my_utils.write_text(text, encoding="utf-8")
 
 
+def _download_fast_langdetect_model(stage: Path) -> None:
+    """预下载 fast-langdetect 语言检测模型，避免用户首次合成时联网下载。
+
+    fast-langdetect 在首次调用 detect() 时会从 Facebook CDN 下载 lid.176.bin（~131MB），
+    嵌入式环境不一定有外网，或外网慢导致首次合成卡死。构建时预打包进去。
+    """
+    target_dir = stage / "GPT_SoVITS" / "pretrained_models" / "fast_langdetect"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_file = target_dir / "lid.176.bin"
+    if target_file.exists() and target_file.stat().st_size > 0:
+        logger.info("fast_langdetect model already cached: %s", target_file)
+        return
+
+    url = "https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.bin"
+    logger.info("downloading fast_langdetect model: %s -> %s", url, target_file)
+    try:
+        with urllib.request.urlopen(url, timeout=300) as resp:
+            with target_file.open("wb") as f:
+                shutil.copyfileobj(resp, f)
+        size_mb = target_file.stat().st_size / 1024 / 1024
+        logger.info("fast_langdetect model downloaded: %.1f MB", size_mb)
+    except Exception:
+        logger.exception("fast_langdetect model download failed")
+        raise SystemExit(
+            "fast_langdetect 模型下载失败（需要外网访问 Facebook CDN）。"
+            "检查网络或代理后重试。"
+        )
+
+
 def _download_base_models(python_exe: Path, base_models_dir: Path, work_dir: Path) -> None:
     """用 huggingface_hub.snapshot_download 拉基础模型。
 
@@ -813,6 +842,9 @@ def build(version: str, python_version: str, profile: str, out_dir: Path) -> Pat
             # 不受 TTS_Config 控制。把 base_models/gsv-v4-pretrained/ 镜像到
             # GPT_SoVITS/pretrained_models/gsv-v4-pretrained/，否则 pipeline init 炸。
             _mirror_v4_pretrained_for_hardcoded_paths(stage, base_models)
+
+            # 7c. 预下载 fast-langdetect 语言检测模型，避免用户首次合成时联网下载。
+            _download_fast_langdetect_model(stage)
 
         # 8. 复制 serve.py 到 stage 根
         shutil.copy2(_SERVE_PY, stage / "serve.py")
