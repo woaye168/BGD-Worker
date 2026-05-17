@@ -27,6 +27,9 @@
 #   - tools/ 子目录谨慎删除：V4 推理路径在模块级或运行时引用 tools.i18n（process_ckpt.py）、
 #     tools.audio_sr（TTS.py），而 audio_sr.py 运行时又把 tools/AP_BWE_main 加入 sys.path。
 #     因此 tools/i18n 与 tools/AP_BWE_main 均保留；只删明确无关的 asr/uvr5。
+#   - gradio 被 drop（webui 专用），但 tools/my_utils.py 在模块级 import gradio as gr，
+#     且 gr.Warning 被 check_for_existance / check_details 使用。给 gradio 建 stub：
+#     gr.Warning / gr.Error / gr.Info 变为 print，其余属性为 no-op。这样 load_audio 能正常走。
 #   - 产物结构（profile=full）：
 #       <zip-root>/
 #         VERSION
@@ -158,6 +161,86 @@ _STUB_PACKAGES = {
         "type": "alias",
         "alias_of": "jieba",
     },
+    # gradio: 被 tools/my_utils.py 模块级 import（gr.Warning 等），但推理路径只用到
+    # load_audio，gr 相关调用只在 check_for_existance / check_details 里。
+    # 给 gr.Warning / gr.Error / gr.Info 变 print，其余 no-op，避免 import 炸。
+    "gradio": {
+        "type": "custom",
+        "code": (
+            "# stub by build_runtime.py: gradio (no-op for headless runtime)\n"
+            "import warnings\n"
+            "warnings.warn('gradio stub loaded; UI features are disabled')\n"
+            "\n"
+            "def _noop(*args, **kwargs):\n"
+            "    pass\n"
+            "\n"
+            "def _print_warn(msg, *args, **kwargs):\n"
+"    print('[gradio stub Warning]', msg)\n"
+            "\n"
+            "class _FakeBlocks:\n"
+            "    def __enter__(self): return self\n"
+            "    def __exit__(self, *a): pass\n"
+            "    def __getattr__(self, name): return _noop\n"
+            "\n"
+            "class _FakeRow:\n"
+            "    def __enter__(self): return self\n"
+            "    def __exit__(self, *a): pass\n"
+            "    def __getattr__(self, name): return _noop\n"
+            "\n"
+            "class _FakeColumn:\n"
+            "    def __enter__(self): return self\n"
+            "    def __exit__(self, *a): pass\n"
+            "    def __getattr__(self, name): return _noop\n"
+            "\n"
+            "class _FakeTab:\n"
+            "    def __enter__(self): return self\n"
+            "    def __exit__(self, *a): pass\n"
+            "    def __getattr__(self, name): return _noop\n"
+            "\n"
+            "class _FakeTabItem:\n"
+            "    def __enter__(self): return self\n"
+            "    def __exit__(self, *a): pass\n"
+            "    def __getattr__(self, name): return _noop\n"
+            "\n"
+            "class _FakeAccordion:\n"
+            "    def __enter__(self): return self\n"
+            "    def __exit__(self, *a): pass\n"
+            "    def __getattr__(self, name): return _noop\n"
+            "\n"
+            "Warning = _print_warn\n"
+            "Error = _print_warn\n"
+            "Info = _print_warn\n"
+            "Blocks = _FakeBlocks\n"
+            "Row = _FakeRow\n"
+            "Column = _FakeColumn\n"
+            "Tab = _FakeTab\n"
+            "TabItem = _FakeTabItem\n"
+            "Accordion = _FakeAccordion\n"
+            "Textbox = _noop\n"
+            "Button = _noop\n"
+            "Audio = _noop\n"
+            "File = _noop\n"
+            "Dropdown = _noop\n"
+            "Slider = _noop\n"
+            "Number = _noop\n"
+            "Checkbox = _noop\n"
+            "Radio = _noop\n"
+            "Markdown = _noop\n"
+            "HTML = _noop\n"
+            "Image = _noop\n"
+            "Video = _noop\n"
+            "Dataframe = _noop\n"
+            "Plot = _noop\n"
+            "Gallery = _noop\n"
+            "Model3D = _noop\n"
+            "HighlightText = _noop\n"
+            "Code = _noop\n"
+            "JSON = _noop\n"
+            "Label = _noop\n"
+            "Chatbot = _noop\n"
+            "__version__ = '0.0.0-stub'\n"
+        ),
+    },
 }
 
 
@@ -258,7 +341,7 @@ def _filter_requirements(src: Path, dst: Path, drop_names: set[str]) -> list[str
             if not stripped or stripped.startswith("#") or stripped.startswith("-"):
                 fout.write(raw)
                 continue
-            # 包名取 `<> =!~;[\s` 前的部分
+            # 包名取 `<>=!~;[\s` 前的部分
             name_match = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)", stripped)
             if not name_match:
                 fout.write(raw)
@@ -318,6 +401,9 @@ def _create_stub_packages(python_dir: Path, stubs: dict[str, dict]) -> None:
                 lines.append(f"{attr} = _missing")
             init_py.write_text("\n".join(lines) + "\n", encoding="utf-8")
             logger.info("stub created: %s (raise-on-use, %d attrs)", name, len(attrs))
+        elif spec["type"] == "custom":
+            init_py.write_text(spec["code"], encoding="utf-8")
+            logger.info("stub created: %s (custom code)", name)
 
 
 def _clone_gpt_sovits(target: Path) -> None:
