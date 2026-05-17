@@ -92,7 +92,9 @@ _SERVE_PY_INFER_DEPS = ["numpy", "soundfile", "matplotlib", "nltk", "pandas"]
 
 # CPU torch wheel（Windows x64，约 250MB；不含 CUDA）
 # 不指定具体版本：让 pip 解析最新稳定；如需固定可加 ==2.4.0
-_TORCH_DEPS = ["torch", "torchaudio"]
+# imageio-ffmpeg：为 GPT-SoVITS tools/my_utils.load_audio 提供 ffmpeg 二进制，
+# 避免依赖用户系统 PATH 中已安装 ffmpeg。
+_TORCH_DEPS = ["torch", "torchaudio", "imageio-ffmpeg"]
 
 # 下载基础模型的工具
 _HF_DOWNLOAD_DEPS = ["huggingface_hub"]
@@ -465,6 +467,103 @@ def _strip_gpt_sovits_extras(repo_root: Path) -> None:
             logger.info("strip file: %s", rel)
 
 
+def _patch_gpt_sovits_tts_dtype(stage: Path) -> None:
+    """Patch GPT-SoVITS TTS.py：当 is_half=False 时显式把 BERT/HuBERT 模型转 float32。
+
+    上游预训练权重（chinese-hubert-base / chinese-roberta-wwm-ext-large）
+    可能是 FP16 保存的；CPU 模式下若权重保持 FP16 而输入是 FP32，
+    conv1d 会抛 "Input type (torch.FloatTensor) and weight type (torch.HalfTensor)".
+    """
+    tts_py = stage / "GPT_SoVITS" / "TTS_infer_pack" / "TTS.py"
+    if not tts_py.exists():
+        logger.warning("TTS.py not found, skip dtype patch")
+        return
+
+    text = tts_py.read_text(encoding="utf-8")
+    patched = False
+
+    # init_cnhuhbert_weights：在 .half() 分支后加 else: .float()
+    old_cnhubert = (
+        "        if self.configs.is_half and str(self.configs.device) != \"cpu\":\n"
+        "            self.cnhuhbert_model = self.cnhuhbert_model.half()\n"
+    )
+    new_cnhubert = (
+        "        if self.configs.is_half and str(self.configs.device) != \"cpu\":\n"
+        "            self.cnhuhbert_model = self.cnhuhbert_model.half()\n"
+        "        else:\n"
+        "            self.cnhuhbert_model = self.cnhuhbert_model.float()\n"
+    )
+    if old_cnhubert in text:
+        text = text.replace(old_cnhubert, new_cnhubert)
+        patched = True
+        logger.info("patched init_cnhuhbert_weights: add .float() fallback")
+    else:
+        logger.warning("init_cnhuhbert_weights patch pattern not found")
+
+    # init_bert_weights：在 .half() 分支后加 else: .float()
+    old_bert = (
+        "        if self.configs.is_half and str(self.configs.device) != \"cpu\":\n"
+        "            self.bert_model = self.bert_model.half()\n"
+    )
+    new_bert = (
+        "        if self.configs.is_half and str(self.configs.device) != \"cpu\":\n"
+        "            self.bert_model = self.bert_model.half()\n"
+        "        else:\n"
+        "            self.bert_model = self.bert_model.float()\n"
+    )
+    if old_bert in text:
+        text = text.replace(old_bert, new_bert)
+        patched = True
+        logger.info("patched init_bert_weights: add .float() fallback")
+    else:
+        logger.warning("init_bert_weights patch pattern not found")
+
+    if patched:
+        tts_py.write_text(text, encoding="utf-8")
+
+
+def _patch_tools_my_utils_ffmpeg(stage: Path) -> None:
+    """Patch tools/my_utils.py：用 imageio-ffmpeg 的绝对路径替代 bare `ffmpeg` 命令。
+
+    嵌入式环境没有系统 ffmpeg，bare `ffmpeg` 会在 subprocess 中抛 FileNotFoundError。
+    imageio-ffmpeg 会自带一个 ffmpeg 二进制，运行时可通过 imageio_ffmpeg.get_ffmpeg_exe()
+    获取绝对路径。由于 serve.py 在 import 阶段才注入 PATH，而 GPT-SoVITS 内部可能在
+    subprocess.Popen 之前就用 bare `ffmpeg` 调用，因此直接改源码更可靠。
+    """
+    my_utils = stage / "tools" / "my_utils.py"
+    if not my_utils.exists():
+        logger.warning("tools/my_utils.py not found, skip ffmpeg patch")
+        return
+
+    text = my_utils.read_text(encoding="utf-8")
+    # 在 import 块末尾插入 imageio_ffmpeg 探测逻辑
+    old_import = "import pandas as pd\n"
+    new_import = (
+        "import pandas as pd\n\n"
+        "try:\n"
+        "    import imageio_ffmpeg\n"
+        "    _FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()\n"
+        "except Exception:\n"
+        "    _FFMPEG_EXE = \"ffmpeg\"\n"
+    )
+    if old_import in text and "_FFMPEG_EXE" not in text:
+        text = text.replace(old_import, new_import, 1)
+    else:
+        logger.warning("tools/my_utils.py import patch pattern not found")
+        return
+
+    # 把 .run(cmd=["ffmpeg", ...) 替换为 .run(cmd=[_FFMPEG_EXE, ...)
+    old_run = '.run(cmd=["ffmpeg", "-nostdin"], capture_stdout=True, capture_stderr=True)'
+    new_run = '.run(cmd=[_FFMPEG_EXE, "-nostdin"], capture_stdout=True, capture_stderr=True)'
+    if old_run in text:
+        text = text.replace(old_run, new_run, 1)
+        logger.info("patched tools/my_utils.py: use imageio_ffmpeg absolute path")
+    else:
+        logger.warning("tools/my_utils.py ffmpeg cmd patch pattern not found")
+
+    my_utils.write_text(text, encoding="utf-8")
+
+
 def _download_base_models(python_exe: Path, base_models_dir: Path, work_dir: Path) -> None:
     """用 huggingface_hub.snapshot_download 拉基础模型。
 
@@ -678,6 +777,8 @@ def build(version: str, python_version: str, profile: str, out_dir: Path) -> Pat
             # 删剩余文件
             shutil.rmtree(gpt_sovits_clone, ignore_errors=True)
             _strip_gpt_sovits_extras(stage)
+            _patch_gpt_sovits_tts_dtype(stage)
+            _patch_tools_my_utils_ffmpeg(stage)
 
             # 6. 装 GPT-SoVITS 完整运行依赖（librosa/transformers/...）
             #   先过滤掉 pyopenjtalk(JA, 需 CMake)/jieba_fast(C ext)/gradio(webui)/faster-whisper(ASR) 等

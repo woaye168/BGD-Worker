@@ -205,6 +205,44 @@ def _ensure_pipeline() -> object:
         logger.exception("torch load failed")
         raise RuntimeError(f"torch 加载失败: {e}") from e
 
+    # GPT-SoVITS tools/my_utils.py 的 load_audio 依赖 ffmpeg 命令行。
+    # 嵌入式 Python 不含系统 ffmpeg；用 imageio-ffmpeg 提供的二进制并注入 PATH。
+    logger.info("ensure ffmpeg in PATH (via imageio_ffmpeg)")
+    try:
+        import imageio_ffmpeg  # type: ignore[import-not-found]
+        import os as _os
+
+        _ffmpeg_dir = _os.path.dirname(imageio_ffmpeg.get_ffmpeg_exe())
+        _path_sep = ";" if _os.name == "nt" else ":"
+        _env_path = _os.environ.get("PATH", "")
+        if _ffmpeg_dir not in _env_path.split(_path_sep):
+            _os.environ["PATH"] = _ffmpeg_dir + _path_sep + _env_path
+            logger.info("ffmpeg dir added to PATH: %s", _ffmpeg_dir)
+    except Exception as e:
+        logger.warning("imageio_ffmpeg setup failed: %s", e)
+
+    # torchaudio 2.6+ 默认后端 torchcodec 依赖 FFmpeg DLL（嵌入式环境无）。
+    # GPT-SoVITS TTS.py:_get_ref_spec 第 1 步调用 torchaudio.load 读参考音频，
+    # 用 soundfile 替代避免 torchcodec 缺失/不兼容问题。
+    logger.info("patch torchaudio.load -> soundfile")
+    try:
+        import torchaudio  # type: ignore[import-not-found]
+        import soundfile as sf  # type: ignore[import-not-found]
+
+        _orig_torchaudio_load = torchaudio.load
+
+        def _torchaudio_load_with_soundfile(filepath, *args, **kwargs):
+            data, sr = sf.read(str(filepath), dtype="float32")
+            if data.ndim == 1:
+                tensor = torch.from_numpy(data).unsqueeze(0)
+            else:
+                tensor = torch.from_numpy(data.T)
+            return tensor, sr
+
+        torchaudio.load = _torchaudio_load_with_soundfile  # type: ignore[assignment]
+    except Exception as e:
+        logger.warning("torchaudio.load patch failed: %s", e)
+
     # 懒导入 —— 缺依赖时给清晰错误
     logger.info("loading GPT_SoVITS.TTS_infer_pack ...")
     try:
@@ -254,6 +292,17 @@ def _ensure_pipeline() -> object:
     except Exception as e:
         logger.exception("TTS pipeline construct failed")
         raise RuntimeError(f"TTS pipeline 构造失败: {e}") from e
+
+    # 上游预训练权重（chinese-hubert-base / chinese-roberta-wwm-ext-large）
+    # 可能是 FP16 保存的；CPU 模式下 is_half=False 需要显式转 FP32，
+    # 否则 FP16 权重与 FP32 输入在 conv1d 中类型不匹配。
+    if not is_half:
+        if getattr(_PIPELINE, "cnhuhbert_model", None) is not None:
+            _PIPELINE.cnhuhbert_model = _PIPELINE.cnhuhbert_model.float()
+            logger.info("cnhuhbert_model -> float32")
+        if getattr(_PIPELINE, "bert_model", None) is not None:
+            _PIPELINE.bert_model = _PIPELINE.bert_model.float()
+            logger.info("bert_model -> float32")
 
     logger.info("pipeline ready in %.1fs", time.time() - t0)
     return _PIPELINE
