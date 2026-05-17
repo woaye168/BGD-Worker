@@ -101,12 +101,16 @@ jobs:
           fail_on_unmatched_files: true
 
   build-runtime:
-    name: 打包本地 TTS 运行时
+    name: "打包 runtime [${{ matrix.target }}]"
     # runtime-v* tag 或 workflow_dispatch target=runtime
     if: |
       startsWith(github.ref, 'refs/tags/runtime-v') ||
       (github.event_name == 'workflow_dispatch' && inputs.target == 'runtime')
     runs-on: windows-latest
+    strategy:
+      fail-fast: false  # 一个 target 炸不影响别的 target 继续
+      matrix:
+        target: [cpu, amd-rocm, nvidia-cuda]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -115,13 +119,13 @@ jobs:
       - name: 安装 uv
         uses: astral-sh/setup-uv@v5
 
-      - name: 打包运行时 + 上传 HuggingFace
+      - name: 打包运行时 + 上传 HuggingFace [${{ matrix.target }}]
         shell: bash
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           set -o pipefail
-          # ref_name 形如 runtime-v0.2.0 → 提取 0.2.0；workflow_dispatch 时退回时间戳
+          # ref_name 形如 runtime-v0.3.0 → 提取 0.3.0；workflow_dispatch 时退回时间戳
           raw="${{ github.ref_name }}"
           if [[ "$raw" == runtime-v* ]]; then
             ver="${raw#runtime-v}"
@@ -129,36 +133,39 @@ jobs:
             ver="manual-$(date +%Y%m%d-%H%M%S)"
           fi
           echo "RUNTIME_VERSION=$ver" >> $GITHUB_ENV
+          target="${{ matrix.target }}"
           # tag push 才上传 HF；workflow_dispatch（手动跑）只生成 artifact 不污染 HF
           if [[ "${{ github.ref }}" == refs/tags/runtime-v* ]]; then
             HF_REPO="${HF_REPO:-woaye168/bgd-worker-npc-voice-gen-runtime}"
             uv run python scripts/build_runtime.py \
-              --version "$ver" --out dist \
+              --version "$ver" --out dist --target "$target" \
               --hf-repo "$HF_REPO" 2>&1 | tee build_runtime.log
           else
             uv run python scripts/build_runtime.py \
-              --version "$ver" --out dist 2>&1 | tee build_runtime.log
+              --version "$ver" --out dist --target "$target" 2>&1 | tee build_runtime.log
           fi
 
-      - name: 失败诊断
+      - name: 失败诊断 [${{ matrix.target }}]
         if: failure()
         shell: bash
         run: |
           {
-            echo "## 运行时打包失败诊断"
+            echo "## 运行时打包失败诊断 (target=${{ matrix.target }})"
             echo "### build_runtime.py 输出（末 200 行）"
             echo '```'
             tail -n 200 build_runtime.log 2>/dev/null || echo "(无 build_runtime.log)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: 计算 sha256 + 抓 HF URL + 写 step summary
+      - name: 计算 sha256 + 抓 HF URL + 写 step summary [${{ matrix.target }}]
         shell: pwsh
         run: |
-          $zip = Get-ChildItem dist/local-tts-runtime-v*.zip | Select-Object -First 1
+          $target = "${{ matrix.target }}"
+          # zip 文件名形如 local-tts-runtime-amd-rocm-v0.3.0.zip
+          $zip = Get-ChildItem "dist/local-tts-runtime-$target-v*.zip" | Select-Object -First 1
           $hash = (Get-FileHash -Algorithm SHA256 $zip.FullName).Hash.ToLower()
           $size = $zip.Length
-          Write-Host "zip=$($zip.FullName)  sha256=$hash  size=$size"
+          Write-Host "target=$target  zip=$($zip.FullName)  sha256=$hash  size=$size"
           echo "RUNTIME_ZIP_PATH=$($zip.FullName)" >> $env:GITHUB_ENV
           echo "RUNTIME_ZIP_NAME=$($zip.Name)" >> $env:GITHUB_ENV
           echo "RUNTIME_SHA256=$hash" >> $env:GITHUB_ENV
@@ -172,16 +179,18 @@ jobs:
           } else {
             $hfUrl = "(本次未上传 HF；workflow_dispatch 跑或 HF_TOKEN 未配置)"
           }
-          # step summary：把要回填 catalog.json 的字段都列出来
+          # step summary：把要回填 catalog.json 的字段都列出来。
+          # 因为 matrix 并发，每个 target job 各写一段，最终 Summary 页会拼三段
+          $jsonKey = "windows_x64_" + ($target -replace '-', '_')
           @"
-          ## 运行时元数据（供 catalog.json windows_x64 段使用）
+          ## 运行时元数据 [target=$target] → catalog.json $jsonKey 段
 
           - **download_url**: ``$hfUrl``
           - **sha256**: ``$hash``
           - **size_bytes**: ``$size``
           - **version**: ``$env:RUNTIME_VERSION``
 
-          打开 catalog.json 把上述三/四个字段写进 windows_x64 段并提交。
+          打开 catalog.json 把上述字段写进 $jsonKey 段并提交。
           "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
 
       - name: 作为 workflow artifact 备份（保 30 天）
