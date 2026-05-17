@@ -173,6 +173,12 @@ def _ensure_pipeline() -> object:
 
     # GPT-SoVITS 内部用相对路径（如 GPT_SoVITS/configs/...）；切到 runtime_root 让 import 与 path 解析正确
     os.chdir(str(_RUNTIME_ROOT))
+
+    # G2PW (chinese2.py) 在模块级读取 os.environ["bert_path"] 作为 AutoTokenizer 的 model_source；
+    # 默认是相对路径 "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large"，
+    # 但该目录实际在 base_models/ 下。提前注入绝对路径避免 transformers 把它当成 HF Hub repo ID。
+    os.environ["bert_path"] = str(base_models / "chinese-roberta-wwm-ext-large")
+
     # 两层 sys.path 都加：
     # - runtime_root：让 `from GPT_SoVITS.TTS_infer_pack ...` 工作
     # - runtime_root/GPT_SoVITS：让 GPT-SoVITS 内部的顶级导入 `from AR.models...` /
