@@ -1,7 +1,7 @@
-# @purpose: 在线模型 catalog 客户端（GitHub Release JSON + zip 流式下载）
+# @purpose: 在线模型 catalog 客户端（GitHub Release JSON + zip 流式下载）+ raw manifest 共享缓存
 # @layer: adapter
 # @contract:
-#   - GithubReleaseCatalog(url, models_dir, cache_ttl_sec).{fetch, download}
+#   - GithubReleaseCatalog(url, models_dir, cache_ttl_sec).{fetch, fetch_raw, download}
 # @depends:
 #   - asyncio, json, time, logging, zipfile, shutil (stdlib)
 #   - pathlib
@@ -9,9 +9,17 @@
 #   - ../contract/errors.py: ModelError
 #   - ./_download.py: stream_download, sha256_file
 # @invariants:
-#   - catalog JSON 形状: {"version": str, "models": [TTSModel-dict, ...]}
+#   - catalog JSON schema v2 形状（每段独立 version）:
+#       {"schema_version": 2,
+#        "windows_x64": {"version": str, "download_url", "size_bytes", "sha256"},
+#        "windows_x64_cpu": {...},
+#        "windows_x64_amd_rocm": {...},
+#        "windows_x64_nvidia_cuda": {...},
+#        "models": [TTSModel-dict, ...]}
+#     v1 兼容：顶层 "version" 字段存在时，作为段缺 version 的兜底（runtime_installer 处理）
 #     每条 model 必含 {id, name, download_url}；engine 缺省 "local"；source 强制改为 "catalog"
-#   - fetch() 缓存 cache_ttl_sec 秒；force=True 强制重新拉取
+#   - fetch() 缓存 cache_ttl_sec 秒；force=True 强制重新拉取（带 CDN 缓存破坏 query string）
+#   - fetch_raw() 返回原始 manifest dict 供 runtime_installer 消费（共享缓存层）
 #   - fetch() 失败抛 ModelError（含底层原因）
 #   - download() 是 async generator，产出事件:
 #       {"phase":"start"|"downloading"|"verifying"|"extracting"|"done", ...}
@@ -46,23 +54,34 @@ class GithubReleaseCatalog:
         self._url = url
         self._models_dir = Path(models_dir)
         self._ttl = max(0, int(cache_ttl_sec))
-        self._cache: Optional[tuple[float, list[TTSModel]]] = None
+        # 缓存 (timestamp, raw_payload_dict)；models 按需从 raw 派生
+        self._raw_cache: Optional[tuple[float, dict]] = None
 
-    async def fetch(self, force: bool = False) -> list[TTSModel]:
+    async def fetch_raw(self, force: bool = False) -> dict:
+        """返回原始 manifest dict（含 windows_x64* 段 + models 段）。
+
+        force=True 时除清本地缓存外，还附加 query string 破坏 GitHub raw / CDN 边缘缓存
+        （raw.githubusercontent.com 默认 5 分钟 TTL，HF resolve 类似）。
+        runtime_installer / catalog 共用此方法读取同源 JSON。
+        """
         if not self._url:
             raise ModelError("未配置 catalog URL，请先在「软件设置」填入")
         now = time.time()
-        if not force and self._cache and (now - self._cache[0]) < self._ttl:
-            return self._cache[1]
+        if not force and self._raw_cache and (now - self._raw_cache[0]) < self._ttl:
+            return self._raw_cache[1]
         try:
-            payload = await asyncio.to_thread(self._fetch_sync)
+            payload = await asyncio.to_thread(self._fetch_sync, force)
         except URLError as e:
             raise ModelError(f"catalog 拉取失败(网络): {e}") from e
         except Exception as e:
             raise ModelError(f"catalog 拉取失败: {e}") from e
+        self._raw_cache = (now, payload)
+        return payload
+
+    async def fetch(self, force: bool = False) -> list[TTSModel]:
+        payload = await self.fetch_raw(force=force)
         models = self._parse(payload)
-        self._cache = (now, models)
-        logger.info("catalog fetched: url=%s models=%d", self._url, len(models))
+        logger.info("catalog fetched: url=%s models=%d force=%s", self._url, len(models), force)
         return models
 
     async def download(self, id: str) -> AsyncIterator[dict]:
@@ -127,10 +146,18 @@ class GithubReleaseCatalog:
 
     # internal
 
-    def _fetch_sync(self) -> dict:
+    def _fetch_sync(self, force: bool = False) -> dict:
         from urllib.request import Request, urlopen
 
-        req = Request(self._url, headers={"User-Agent": "npc-voice-gen/0.1", "Accept": "application/json"})
+        url = self._url
+        headers = {"User-Agent": "npc-voice-gen/0.1", "Accept": "application/json"}
+        if force:
+            # 附加时间戳 query 破坏 GitHub raw / HF resolve / 各级 CDN 边缘缓存
+            sep = "&" if "?" in url else "?"
+            url = f"{url}{sep}_={int(time.time())}"
+            headers["Cache-Control"] = "no-cache"
+            headers["Pragma"] = "no-cache"
+        req = Request(url, headers=headers)
         with urlopen(req, timeout=15) as resp:
             raw = resp.read().decode("utf-8")
         data = json.loads(raw)

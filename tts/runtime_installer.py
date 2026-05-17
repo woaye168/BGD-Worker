@@ -11,14 +11,15 @@
 # @invariants:
 #   - 当前仅支持 Windows（用户决策 Q2）；非 win32 调 install() 抛 ModelError，
 #     message 含 "暂不支持" + 平台名，供前端展示
-#   - manifest_url 指向独立的运行时清单 JSON（与模型 catalog 是两套），形状:
+#   - manifest_url 指向独立的运行时清单 JSON（与模型 catalog 是两套），schema v2 形状:
 #       {
-#         "version": str,
-#         "windows_x64_cpu": {"download_url", "size_bytes", "sha256"},
+#         "schema_version": 2,
+#         "windows_x64_cpu": {"version": str, "download_url", "size_bytes", "sha256"},
 #         "windows_x64_amd_rocm": {...},        # 可选；缺则该 target 不可装
 #         "windows_x64_nvidia_cuda": {...},     # 可选；同上
 #         "windows_x64": {...}                  # 旧字段，作 cpu 别名兜底（兼容 v0.2.x 旧 catalog）
 #       }
+#     v1 兼容：段缺 version 时回退顶层 "version"（旧 catalog 共享单 version）。
 #     按 target 选段：优先 windows_x64_<target_normalized>（'-' → '_'），
 #     若该 target 段缺失且 target == 'cpu' 则 fallback `windows_x64`
 #   - VERSION 文件格式 `<ver> <target>`（如 "0.3.0 amd-rocm"）；
@@ -158,13 +159,14 @@ class LocalTTSRuntimeInstaller:
                 f"manifest 缺 target={self._target} 对应段（{_manifest_slot_key(self._target)}）。"
                 f"该后端可能尚未发布；请切到其他后端或等待 catalog 更新。"
             )
-        version = str(manifest.get("version") or "")
+        # 版本号优先取段内；缺则 fallback 顶层（兼容 v1 catalog 顶层 version）
+        version = str(slot.get("version") or manifest.get("version") or "")
         download_url = slot["download_url"]
         size_bytes = int(slot.get("size_bytes") or 0)
         expected_sha = (slot.get("sha256") or "").lower()
         logger.info(
-            "install runtime: target=%s slot=%s url=%s size=%dB",
-            self._target, slot_key, download_url, size_bytes,
+            "install runtime: target=%s slot=%s version=%s url=%s size=%dB",
+            self._target, slot_key, version, download_url, size_bytes,
         )
 
         self._install_dir.parent.mkdir(parents=True, exist_ok=True)
