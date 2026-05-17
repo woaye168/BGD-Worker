@@ -72,10 +72,22 @@
   （`s1v3.ckpt` + `gsv-v4-pretrained/s2Gv4.pth` + 共享 BERT/HuBERT）；
   meta.json 声明非 v4 时 serve.py 在 `_switch_voice` 抛 `RuntimeError` 引导用户换 V4 模型。
   V2/V3 支持留 future（需多 base models + Pipeline 多实例缓存；空间敏感）。
-- runtime zip 改挂 HuggingFace（约 2.5-3GB 超 GitHub Release 单文件 2GB 上限）：
+- runtime zip 改挂 HuggingFace（约 2.5-7GB 超 GitHub Release 单文件 2GB 上限）：
   `huggingface.co/woaye168/bgd-worker-npc-voice-gen-runtime`；
   上传走 build_runtime.py 的 `--hf-repo` flag + `HF_TOKEN` env 完成；
   CI 在 step summary 输出实际 sha256 / size / HF URL 供手动回填 catalog.json
+- runtime 支持 **多硬件 target 变体**（`cpu` / `amd-rocm` / `nvidia-cuda`）：
+  - `LocalTTSSettings.target` 决定下载哪个变体；`backend` 仍传给 serve.py 当 torch device 字符串
+  - `scripts/build_runtime.py --target <t>` 按 target 切 torch wheel 源
+    （cpu→PyPI cpu / amd-rocm→ROCm gfx1151 nightly / nvidia-cuda→cu126）；
+    zip 文件名 `local-tts-runtime-<target>-v<ver>.zip` 自带 target 区分
+  - `catalog.json` schema：`windows_x64_<target>` 三段并存 + 旧 `windows_x64` 段作 cpu fallback；
+    `LocalTTSRuntimeInstaller(target=...)` 按 `_manifest_slot_key(target)` 选段
+  - `VERSION` 文件 `<ver> <target>` 格式；旧格式（仅版本号）默认 cpu
+  - 切 target 触发自动重装：UI 设置改 target → 模型管理状态显示 target_mismatch=true →
+    "重装为 X" 按钮 → `/runtime/install` 端点检测后先 uninstall 旧变体再 install 新的
+  - CI release.yml `build-runtime` job 用 matrix `target: [cpu, amd-rocm, nvidia-cuda]`，
+    一个 `runtime-v*` tag push 并发出三个 zip
 - 本地 TTS 引擎是**主 app 进程 ↔ runtime 子进程**双进程架构：
   - 主 app 侧 `tts/local_engine.py:LocalTTSEngine` 持有一个长驻 `subprocess.Popen` 实例，
     首次 `synthesize` 时懒启动 runtime 子进程并轮询 `GET /health` 等就绪（≤30s），
