@@ -22,6 +22,8 @@
 #     被 drop 的包用 _create_stub_packages 建 stub（jieba_fast 透传 jieba；pyopenjtalk 调用时显式抛错）。
 #     opencc 则由 opencc-python-reimplemented 纯 Python 替代，API 兼容。
 #     副作用：runtime 不支持日语合成；中文/英文不受影响
+#   - matplotlib 不在 GPT-SoVITS requirements.txt 中，但 V4 的 AR.modules.lr_schedulers 在模块级
+#     import matplotlib.pyplot；显式加入 _SERVE_PY_INFER_DEPS 兜底
 #   - 产物结构（profile=full）：
 #       <zip-root>/
 #         VERSION
@@ -66,7 +68,9 @@ _MINIMAL_DEPS = [
 # Full profile 额外依赖：serve.py 推理流程需要 numpy + soundfile
 # GPT-SoVITS 的其余深依赖（librosa/transformers/jieba_fast/pypinyin/LangSegment/...）
 # 走 `pip install -r GPT-SoVITS/requirements.txt`（克隆后即时安装）
-_SERVE_PY_INFER_DEPS = ["numpy", "soundfile"]
+# matplotlib：GPT-SoVITS V4 的 AR.modules.lr_schedulers 在模块级 import matplotlib.pyplot，
+# 但上游 requirements.txt 未显式声明，需手动兜底
+_SERVE_PY_INFER_DEPS = ["numpy", "soundfile", "matplotlib"]
 
 # CPU torch wheel（Windows x64，约 250MB；不含 CUDA）
 # 不指定具体版本：让 pip 解析最新稳定；如需固定可加 ==2.4.0
@@ -136,8 +140,8 @@ _DROP_REQUIREMENTS = {
     "nemo_text_processing",
 }
 
-# 给被 drop 的包建 stub，避免 GPT-SoVITS 在 import 时炸（模块级 import 会失败）。
-# 值是该 stub 模块对外暴露的属性列表（GPT-SoVITS 可能 `from X import Y` 形式访问）。
+# 给被 drop 的包建 stub，避免 GPT_SoVITS 在 import 时炸（模块级 import 会失败）。
+# 值是该 stub 模块对外暴露的属性列表（GPT_SoVITS 可能 `from X import Y` 形式访问）。
 _STUB_PACKAGES = {
     # pyopenjtalk: 调用时显式抛错（运行时若执行 JA 合成才会触发）
     "pyopenjtalk": {
@@ -273,7 +277,7 @@ def _site_packages_dir(python_dir: Path) -> Path:
 
 
 def _create_stub_packages(python_dir: Path, stubs: dict[str, dict]) -> None:
-    """为被 drop 的包建 stub 模块；防止 GPT-SoVITS 模块级 import 时炸。"""
+    """为被 drop 的包建 stub 模块；防止 GPT_SoVITS 模块级 import 时炸。"""
     site_packages = _site_packages_dir(python_dir)
     for name, spec in stubs.items():
         pkg_dir = site_packages / name
@@ -513,7 +517,7 @@ def build(version: str, python_version: str, profile: str, out_dir: Path) -> Pat
         _pip_install(python_exe, _MINIMAL_DEPS)
 
         if profile == "full":
-            # 4. CPU torch + serve.py 推理依赖（numpy / soundfile）
+            # 4. CPU torch + serve.py 推理依赖（numpy / soundfile / matplotlib）
             #   显式 CPU index，避免拉到 CUDA 大轮子超 2GB Release 限制
             _pip_install(
                 python_exe,
@@ -560,7 +564,7 @@ def build(version: str, python_version: str, profile: str, out_dir: Path) -> Pat
                 # 用纯 Python 的 opencc-python-reimplemented 替代，API 兼容 `from opencc import OpenCC`。
                 _pip_install(python_exe, ["opencc-python-reimplemented"])
 
-                # 给被 drop 的包建 stub（GPT-SoVITS 可能在模块级 import 它们）
+                # 给被 drop 的包建 stub（GPT_SoVITS 可能在模块级 import 它们）
                 _create_stub_packages(python_dir, _STUB_PACKAGES)
             else:
                 logger.warning("GPT-SoVITS requirements.txt 未找到，跳过深依赖安装")
