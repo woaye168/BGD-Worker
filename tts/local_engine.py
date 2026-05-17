@@ -33,6 +33,7 @@ import json
 import logging
 import socket
 import subprocess
+import os
 import sys
 import threading
 from pathlib import Path
@@ -357,10 +358,20 @@ class LocalTTSEngine:
                 " ".join(cmd), self._log_file or "<stderr>",
             )
 
+            # 给子进程注入 UTF-8 编码环境，配合 serve.py:_force_utf8_io() 防止中文乱码：
+            # - PYTHONIOENCODING=utf-8: Python sys.stdout/stderr 与 -X utf8 一致走 UTF-8
+            # - PYTHONUTF8=1: 等价开关，对部分老依赖兜底（PEP 540）
+            # 若不设，onnxruntime/torch 等 C 扩展输出会按 Windows cp936 写到同一文件，
+            # 与 Python UTF-8 输出混杂导致后期 reader 解码乱码
+            child_env = os.environ.copy()
+            child_env["PYTHONIOENCODING"] = "utf-8"
+            child_env["PYTHONUTF8"] = "1"
+
             popen_kwargs: dict = {
                 "cwd": str(self._runtime_dir),
                 "stdout": self._log_handle if self._log_handle else subprocess.DEVNULL,
                 "stderr": subprocess.STDOUT,  # 合并到 stdout 同一个文件，traceback 不丢
+                "env": child_env,
             }
             # Windows: 不弹黑色控制台（pywebview 父进程是 GUI，spawn 控制台子进程默认会弹窗）
             if sys.platform == "win32":

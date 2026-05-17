@@ -456,8 +456,43 @@ def _build_app():
     return app
 
 
+def _force_utf8_io() -> None:
+    """让本进程的 stdout/stderr 与 Windows 控制台 codepage 一致走 UTF-8。
+
+    背景：runtime 子进程的 stdout/stderr 被主 app 重定向到文件
+    （data_dir/logs/local-tts-runtime.log）。该文件被多处并发写：
+      1. Python logger / print → 受 `-X utf8` 影响走 UTF-8 字节
+      2. C 扩展（onnxruntime / torch 等）→ 走 Windows 默认 ANSI codepage（GBK/cp936）
+         或在出错时调 wide-char API 写 UTF-16 LE 原始字节
+    三种编码混到同一个文件 → 后期 reader 用 UTF-8 解码就出乱码。
+
+    修法：
+      - sys.stdout/stderr.reconfigure(encoding='utf-8')：Python 侧统一 UTF-8
+      - Windows: SetConsoleOutputCP(65001) + SetConsoleCP(65001)：
+        C 扩展走 narrow-byte 路径时也用 UTF-8，wide-char API 经此 codepage 转 UTF-8
+
+    无副作用：非 Windows 跳过 codepage 调用；reconfigure 失败 silently 兜底。
+    """
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        reconf = getattr(stream, "reconfigure", None)
+        if callable(reconf):
+            try:
+                reconf(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+            ctypes.windll.kernel32.SetConsoleCP(65001)
+        except Exception:
+            pass
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     global _BACKEND, _MOCK, _MODEL_ROOT
+    _force_utf8_io()  # 第一时间统一 IO 编码，下面所有 print/log 都走 UTF-8
     parser = argparse.ArgumentParser(description="local TTS runtime HTTP server")
     parser.add_argument("--port", type=int, required=True, help="HTTP 端口（主 app 选定后传入）")
     parser.add_argument(
