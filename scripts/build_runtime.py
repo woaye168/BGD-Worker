@@ -24,12 +24,16 @@
 #     副作用：runtime 不支持日语合成；中文/英文不受影响
 #   - matplotlib 不在 GPT-SoVITS requirements.txt 中，但 V4 的 AR.modules.lr_schedulers 在模块级
 #     import matplotlib.pyplot；显式加入 _SERVE_PY_INFER_DEPS 兜底
+#   - tools/ 子目录谨慎删除：V4 推理路径在模块级或运行时引用 tools.i18n（process_ckpt.py）、
+#     tools.audio_sr（TTS.py），而 audio_sr.py 运行时又把 tools/AP_BWE_main 加入 sys.path。
+#     因此 tools/i18n 与 tools/AP_BWE_main 均保留；只删明确无关的 asr/uvr5。
 #   - 产物结构（profile=full）：
 #       <zip-root>/
 #         VERSION
 #         serve.py
 #         python/python.exe + Lib/site-packages/...（含 stub 模块）
 #         GPT_SoVITS/                    ← 从官方仓库克隆 tag 20250422v4
+#         tools/                         ← 含 i18n/、audio_sr.py、AP_BWE_main/ 等
 #         base_models/
 #           chinese-roberta-wwm-ext-large/
 #           chinese-hubert-base/
@@ -67,7 +71,7 @@ _MINIMAL_DEPS = [
 
 # Full profile 额外依赖：serve.py 推理流程需要 numpy + soundfile
 # GPT-SoVITS 的其余深依赖（librosa/transformers/jieba_fast/pypinyin/LangSegment/...）
-# 走 `pip install -r GPT-SoVITS/requirements.txt`（克隆后即时安装）
+# 走 `pip install -r GPT_SoVITS/requirements.txt`（克隆后即时安装）
 # matplotlib：GPT-SoVITS V4 的 AR.modules.lr_schedulers 在模块级 import matplotlib.pyplot，
 # 但上游 requirements.txt 未显式声明，需手动兜底
 _SERVE_PY_INFER_DEPS = ["numpy", "soundfile", "matplotlib"]
@@ -254,7 +258,7 @@ def _filter_requirements(src: Path, dst: Path, drop_names: set[str]) -> list[str
             if not stripped or stripped.startswith("#") or stripped.startswith("-"):
                 fout.write(raw)
                 continue
-            # 包名取 `<>=!~;[\s` 前的部分
+            # 包名取 `<> =!~;[\s` 前的部分
             name_match = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)", stripped)
             if not name_match:
                 fout.write(raw)
@@ -329,14 +333,16 @@ def _clone_gpt_sovits(target: Path) -> None:
 
 
 def _strip_gpt_sovits_extras(repo_root: Path) -> None:
-    """移除 GPT-SoVITS 仓库中训练/微调/前端相关、推理不需要的目录与文件，节省 zip 体积。"""
-    # 推理只依赖 GPT_SoVITS/ 子目录与 tools/ 中部分工具；其余 webui/微调/训练数据可去
+    """移除 GPT-SoVITS 仓库中训练/微调/前端相关、推理不需要的目录与文件，节省 zip 体积。
+
+    V4 推理路径在模块级引用的 tools/ 子目录：
+      - tools.i18n (process_ckpt.py, TextPreprocessor.py)
+      - tools.audio_sr (TTS.py) → 运行时又把 tools/AP_BWE_main 加入 sys.path
+    因此 tools/i18n 与 tools/AP_BWE_main 均不可删。
+    """
     drop_relative = [
         "tools/asr",
         "tools/uvr5",
-        "tools/AP_BWE",
-        "tools/AP_BWE_main",
-        "tools/i18n",  # 多语言资源；若需可保留
         "docs",
         "Docker",
         "Dockerfile",
