@@ -24,6 +24,8 @@
 #     副作用：runtime 不支持日语合成；中文/英文不受影响
 #   - matplotlib 不在 GPT-SoVITS requirements.txt 中，但 V4 的 AR.modules.lr_schedulers 在模块级
 #     import matplotlib.pyplot；显式加入 _SERVE_PY_INFER_DEPS 兜底
+#   - nltk / pandas 也不在 requirements.txt 中，但 text/english.py 模块级 import nltk，
+#     tools/my_utils.py 模块级 import pandas；同样加入 _SERVE_PY_INFER_DEPS 兜底
 #   - tools/ 子目录谨慎删除：V4 推理路径在模块级或运行时引用 tools.i18n（process_ckpt.py）、
 #     tools.audio_sr（TTS.py），而 audio_sr.py 运行时又把 tools/AP_BWE_main 加入 sys.path。
 #     因此 tools/i18n 与 tools/AP_BWE_main 均保留；只删明确无关的 asr/uvr5。
@@ -75,9 +77,11 @@ _MINIMAL_DEPS = [
 # Full profile 额外依赖：serve.py 推理流程需要 numpy + soundfile
 # GPT-SoVITS 的其余深依赖（librosa/transformers/jieba_fast/pypinyin/LangSegment/...）
 # 走 `pip install -r GPT_SoVITS/requirements.txt`（克隆后即时安装）
-# matplotlib：GPT-SoVITS V4 的 AR.modules.lr_schedulers 在模块级 import matplotlib.pyplot，
-# 但上游 requirements.txt 未显式声明，需手动兜底
-_SERVE_PY_INFER_DEPS = ["numpy", "soundfile", "matplotlib"]
+# matplotlib / nltk / pandas 均不在 GPT-SoVITS requirements.txt 中，但推理路径在模块级引用：
+#   - matplotlib: AR.modules.lr_schedulers
+#   - nltk: text/english.py (英文文本处理)
+#   - pandas: tools/my_utils.py (load_audio 等工具)
+_SERVE_PY_INFER_DEPS = ["numpy", "soundfile", "matplotlib", "nltk", "pandas"]
 
 # CPU torch wheel（Windows x64，约 250MB；不含 CUDA）
 # 不指定具体版本：让 pip 解析最新稳定；如需固定可加 ==2.4.0
@@ -175,7 +179,7 @@ _STUB_PACKAGES = {
             "    pass\n"
             "\n"
             "def _print_warn(msg, *args, **kwargs):\n"
-"    print('[gradio stub Warning]', msg)\n"
+            "    print('[gradio stub Warning]', msg)\n"
             "\n"
             "class _FakeBlocks:\n"
             "    def __enter__(self): return self\n"
@@ -609,7 +613,7 @@ def build(version: str, python_version: str, profile: str, out_dir: Path) -> Pat
         _pip_install(python_exe, _MINIMAL_DEPS)
 
         if profile == "full":
-            # 4. CPU torch + serve.py 推理依赖（numpy / soundfile / matplotlib）
+            # 4. CPU torch + serve.py 推理依赖（numpy / soundfile / matplotlib / nltk / pandas）
             #   显式 CPU index，避免拉到 CUDA 大轮子超 2GB Release 限制
             _pip_install(
                 python_exe,
