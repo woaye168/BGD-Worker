@@ -1,11 +1,14 @@
 name: Release
 
 # 触发条件：
-#  - v*           tag → 打包 app（PyInstaller） → 上传到对应 Release
-#  - runtime-v*   tag → 打包本地 TTS 运行时（Python embeddable + fastapi/uvicorn + serve.py） → 上传到对应 Release
-#  - workflow_dispatch：手动选择 target=app 或 target=runtime
-# 行为：均在 windows-latest 上跑；产物 zip 自动上传到 GitHub Release。
+#  - v*           tag → 打包 app（PyInstaller） → 上传到对应 GitHub Release
+#  - runtime-v*   tag → 打包本地 TTS 运行时（含 GPT-SoVITS V4 + 基础模型） → 上传到 HuggingFace
+#  - workflow_dispatch：手动选择 target=app 或 target=runtime（runtime 走 HF 需 HF_TOKEN secret）
+# 行为：均在 windows-latest 上跑。
 # 仅支持 Windows（其他平台暂不发版）。
+# runtime zip ≈ 2.5-3GB 超 GitHub Release 单文件 2GB 上限，改挂 HuggingFace（单文件 50GB）。
+# HF_TOKEN secret 在 GitHub repo Settings → Secrets and variables → Actions 配置；
+# 目标 HF repo: woaye168/bgd-worker-npc-voice-gen-runtime（公开、免费、无限带宽）。
 on:
   push:
     tags: ["v*", "runtime-v*"]
@@ -112,11 +115,13 @@ jobs:
       - name: 安装 uv
         uses: astral-sh/setup-uv@v5
 
-      - name: 打包运行时
+      - name: 打包运行时 + 上传 HuggingFace
         shell: bash
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           set -o pipefail
-          # ref_name 形如 runtime-v0.1.0 → 提取 0.1.0；workflow_dispatch 时退回时间戳
+          # ref_name 形如 runtime-v0.2.0 → 提取 0.2.0；workflow_dispatch 时退回时间戳
           raw="${{ github.ref_name }}"
           if [[ "$raw" == runtime-v* ]]; then
             ver="${raw#runtime-v}"
@@ -124,7 +129,16 @@ jobs:
             ver="manual-$(date +%Y%m%d-%H%M%S)"
           fi
           echo "RUNTIME_VERSION=$ver" >> $GITHUB_ENV
-          uv run python scripts/build_runtime.py --version "$ver" --out dist 2>&1 | tee build_runtime.log
+          # tag push 才上传 HF；workflow_dispatch（手动跑）只生成 artifact 不污染 HF
+          if [[ "${{ github.ref }}" == refs/tags/runtime-v* ]]; then
+            HF_REPO="${HF_REPO:-woaye168/bgd-worker-npc-voice-gen-runtime}"
+            uv run python scripts/build_runtime.py \
+              --version "$ver" --out dist \
+              --hf-repo "$HF_REPO" 2>&1 | tee build_runtime.log
+          else
+            uv run python scripts/build_runtime.py \
+              --version "$ver" --out dist 2>&1 | tee build_runtime.log
+          fi
 
       - name: 失败诊断
         if: failure()
@@ -138,7 +152,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: 计算 sha256
+      - name: 计算 sha256 + 抓 HF URL + 写 step summary
         shell: pwsh
         run: |
           $zip = Get-ChildItem dist/local-tts-runtime-v*.zip | Select-Object -First 1
@@ -149,13 +163,25 @@ jobs:
           echo "RUNTIME_ZIP_NAME=$($zip.Name)" >> $env:GITHUB_ENV
           echo "RUNTIME_SHA256=$hash" >> $env:GITHUB_ENV
           echo "RUNTIME_SIZE=$size" >> $env:GITHUB_ENV
-          # 写到 step summary 方便用户粘贴到 catalog.json
+          # 抓 build_runtime.py 打印的 HF_DOWNLOAD_URL（若有）
+          $hfUrl = (Select-String -Path build_runtime.log -Pattern '^HF_DOWNLOAD_URL=' | Select-Object -Last 1).Line
+          if ($hfUrl) {
+            $hfUrl = $hfUrl -replace '^HF_DOWNLOAD_URL=', ''
+            Write-Host "hf_url=$hfUrl"
+            echo "RUNTIME_HF_URL=$hfUrl" >> $env:GITHUB_ENV
+          } else {
+            $hfUrl = "(本次未上传 HF；workflow_dispatch 跑或 HF_TOKEN 未配置)"
+          }
+          # step summary：把要回填 catalog.json 的字段都列出来
           @"
           ## 运行时元数据（供 catalog.json windows_x64 段使用）
 
-          - **download_url**: ``https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/$($zip.Name)``
+          - **download_url**: ``$hfUrl``
           - **sha256**: ``$hash``
           - **size_bytes**: ``$size``
+          - **version**: ``$env:RUNTIME_VERSION``
+
+          打开 catalog.json 把上述三/四个字段写进 windows_x64 段并提交。
           "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
 
       - name: 作为 workflow artifact 备份（保 30 天）
@@ -165,11 +191,5 @@ jobs:
           path: ${{ env.RUNTIME_ZIP_PATH }}
           if-no-files-found: error
           retention-days: 30
-
-      - name: 发布到 GitHub Release
-        if: startsWith(github.ref, 'refs/tags/runtime-v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: ${{ env.RUNTIME_ZIP_PATH }}
-          generate_release_notes: true
-          fail_on_unmatched_files: true
+        # 注：不再上传到 GitHub Release：runtime zip ≈ 2.5-3GB 超 2GB 限制，
+        # 改挂 HuggingFace（HF 单文件 50GB 上限）。artifact 仅作 30 天 CI 备份用。

@@ -435,6 +435,51 @@ def _make_zip(src_dir: Path, out_zip: Path) -> None:
             zf.write(path, arcname.as_posix())
 
 
+def _upload_to_huggingface(
+    zip_path: Path, hf_repo: str, path_in_repo: str | None = None, commit_message: str | None = None
+) -> str:
+    """上传 zip 到 HuggingFace Hub；返回可直接下载的 resolve URL。
+
+    要求：HF_TOKEN 环境变量已设置（write 权限）。
+    HF 公开仓库单文件上限 50GB，远超 GitHub Release 2GB；速度通常比 GitHub 稳。
+    """
+    import os
+    token = os.environ.get("HF_TOKEN")
+    if not token:
+        raise SystemExit(
+            "HF_TOKEN 环境变量未设置；HuggingFace 上传需要 write 权限的 token。"
+            "本地测试可去 https://huggingface.co/settings/tokens 创建。"
+        )
+    try:
+        from huggingface_hub import HfApi
+    except ImportError as e:
+        raise SystemExit(
+            f"未安装 huggingface_hub: {e}；请 `uv sync` 或 `pip install huggingface_hub>=0.20`"
+        ) from e
+
+    if path_in_repo is None:
+        path_in_repo = zip_path.name
+    msg = commit_message or f"upload runtime: {zip_path.name}"
+    size_mb = zip_path.stat().st_size / 1024 / 1024
+    logger.info(
+        "uploading to huggingface: repo=%s path=%s size=%.1fMB",
+        hf_repo, path_in_repo, size_mb,
+    )
+    api = HfApi(token=token)
+    api.upload_file(
+        path_or_fileobj=str(zip_path),
+        path_in_repo=path_in_repo,
+        repo_id=hf_repo,
+        repo_type="model",
+        commit_message=msg,
+    )
+    # HF resolve URL：https://huggingface.co/<repo>/resolve/main/<path>
+    # 不带 `?download=true` 也可，但带的话避免某些客户端拿到 HTML 重定向页
+    url = f"https://huggingface.co/{hf_repo}/resolve/main/{path_in_repo}"
+    logger.info("upload done: %s", url)
+    return url
+
+
 def build(version: str, python_version: str, profile: str, out_dir: Path) -> Path:
     if sys.platform != "win32":
         raise SystemExit(
@@ -540,7 +585,10 @@ def build(version: str, python_version: str, profile: str, out_dir: Path) -> Pat
         size_mb = out_zip.stat().st_size / 1024 / 1024
         logger.info("done: %s (%.1f MB) profile=%s", out_zip, size_mb, profile)
         if size_mb > 2000:
-            logger.warning("zip > 2GB；GitHub Release 单文件上限 2GB，请考虑切回 minimal 或拆分")
+            logger.info(
+                "zip > 2GB —— 已超 GitHub Release 单文件上限，必须用 --hf-repo 上传到 HuggingFace"
+                "（HF 单文件 50GB 上限够用）"
+            )
         return out_zip
 
 
@@ -567,6 +615,20 @@ def main(argv: list[str] | None = None) -> int:
         help="minimal=仅 serve.py 框架(≈50MB,仅 --mock 可用) / full=含 torch+GPT-SoVITS+基础模型(≈1.8GB)",
     )
     parser.add_argument("--out", default="dist", help="输出目录")
+    parser.add_argument(
+        "--hf-repo",
+        default="",
+        help=(
+            "HuggingFace 上传目标仓库 ID（如 woaye168/bgd-worker-npc-voice-gen-runtime）。"
+            "空值 = 不上传（仅本地构建用）；非空时要求 HF_TOKEN 环境变量含 write 权限 token。"
+            "构建完会上传 zip 到该仓库的 main 分支，stdout 打印 HF_DOWNLOAD_URL 行供 CI 抓。"
+        ),
+    )
+    parser.add_argument(
+        "--hf-path-in-repo",
+        default="",
+        help="上传到 HF 仓库内的路径；默认用 zip 文件名（如 local-tts-runtime-v0.2.0.zip）",
+    )
     args = parser.parse_args(argv)
 
     out = build(
@@ -576,6 +638,18 @@ def main(argv: list[str] | None = None) -> int:
         out_dir=Path(args.out),
     )
     print(f"OUTPUT={out}")
+
+    if args.hf_repo:
+        hf_url = _upload_to_huggingface(
+            zip_path=out,
+            hf_repo=args.hf_repo,
+            path_in_repo=args.hf_path_in_repo or None,
+            commit_message=f"runtime build v{args.version}",
+        )
+        # CI 抓这行回填到 catalog.json 的 download_url
+        print(f"HF_DOWNLOAD_URL={hf_url}")
+    else:
+        logger.info("跳过 HF 上传（--hf-repo 未指定）")
     return 0
 
 
