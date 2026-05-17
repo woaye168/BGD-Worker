@@ -168,10 +168,26 @@ async def import_model(
 
 @router.get("/runtime/status")
 def runtime_status(inst: RuntimeInstaller = Depends(get_runtime_installer)):
+    """返回运行时安装状态。
+
+    target 字段 = 当前设置选择的 target；
+    installed_target = 实际已装的 target（旧 runtime VERSION 仅含版本号时默认 cpu）。
+    两者不一致时前端可提示"切换后端需重装"。
+    """
+    installed_target = (
+        inst.installed_target() if hasattr(inst, "installed_target") else None
+    )
     return {
         "name": inst.name,
         "installed": inst.is_installed(),
         "version": inst.installed_version(),
+        "target": getattr(inst, "target", "cpu"),
+        "installed_target": installed_target,
+        "target_mismatch": (
+            inst.is_installed()
+            and installed_target is not None
+            and installed_target != getattr(inst, "target", "cpu")
+        ),
     }
 
 
@@ -179,6 +195,18 @@ def runtime_status(inst: RuntimeInstaller = Depends(get_runtime_installer)):
 async def runtime_install(inst: RuntimeInstaller = Depends(get_runtime_installer)):
     async def gen() -> AsyncIterator[str]:
         try:
+            # 已装但 target 不匹配（用户切了后端） → 先卸载老变体，再装新变体
+            installed_target = (
+                inst.installed_target() if hasattr(inst, "installed_target") else None
+            )
+            target = getattr(inst, "target", "cpu")
+            if inst.is_installed() and installed_target and installed_target != target:
+                yield _sse({
+                    "phase": "start",
+                    "message": f"检测到已装 target={installed_target}，与当前选择 {target} 不一致，先卸载老变体...",
+                    "target": target,
+                })
+                inst.uninstall()
             async for evt in inst.install():
                 yield _sse(evt)
         except (ModelError, ValidationError) as e:

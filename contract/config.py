@@ -54,15 +54,21 @@ def default_data_dir() -> Path:
 
 
 class LocalTTSSettings(BaseModel):
-    """本地 TTS 引擎子设置（运行时下载/后端选择）。
+    """本地 TTS 引擎子设置（运行时下载/后端选择/硬件 target）。
 
     runtime_installed=False 时，dispatch 收到 'local:xxx' voice 会返回友好错误，
     提示用户先在"模型管理"页安装运行时。
     """
 
-    backend: str = "auto"  # auto|cuda|directml|cpu (Win 仅这几种；非 Win 当前不支持)
+    backend: str = "auto"  # auto|cuda|directml|cpu (传给 runtime serve.py 用于 torch 设备选择)
     runtime_installed: bool = False
     runtime_version: Optional[str] = None
+    # 推理硬件 target，决定从 catalog 哪个段下载 runtime zip：
+    # - "cpu" (默认)：所有机器兜底，PyPI cpu torch wheel
+    # - "amd-rocm"：AMD AI Max 395 / Radeon 8060S 等 Strix Halo gfx1151；ROCm nightly torch
+    # - "nvidia-cuda"：NVIDIA 显卡（RTX 4070 等）；cu126 torch wheel
+    # 切 target 后会触发 runtime 自动重装（旧变体的 VERSION 文件不匹配）。
+    target: str = "cpu"
     # 单次合成 HTTP 请求超时（秒）。首次合成需懒加载基础模型（BERT≈1GB、HuBERT≈400MB、
     # GPT≈150MB、SoVITS≈80MB）+ 切 voice 权重，CPU 模式可能 300-600s；慢机器/老 HDD 还要更久。
     # 默认 600s 兼顾"不假性失败"和"真死锁也别等太久"；UI 设置可调。

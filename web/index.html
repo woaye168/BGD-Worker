@@ -235,6 +235,14 @@ tr.drag-over-bottom td { box-shadow: inset 0 -2px 0 #1f6feb; }
             <option value="cpu">CPU</option>
           </select>
         </div>
+        <div class="field tight" style="min-width:220px"><label>推理硬件变体（runtime target）</label>
+          <select id="setLocalTarget">
+            <option value="cpu">CPU（兜底，所有机器可用）</option>
+            <option value="amd-rocm">AMD ROCm（Strix Halo / AI Max 395）</option>
+            <option value="nvidia-cuda">NVIDIA CUDA（RTX 等 N 卡）</option>
+          </select>
+          <div class="hint">切换后需到「模型管理」点「重装运行时」生效</div>
+        </div>
       </div>
       <div class="row mb-2">
         <div class="field"><label>模型 catalog URL（GitHub Release 上的 JSON；同时供运行时清单使用）</label>
@@ -1238,6 +1246,7 @@ async function loadSettings() {
   $('#setOutputFormat').value = r.settings.tts.output_format || 'ogg';
   $('#setEngine').value = r.settings.tts.engine || 'edge';
   $('#setLocalBackend').value = (r.settings.tts.local && r.settings.tts.local.backend) || 'auto';
+  $('#setLocalTarget').value = (r.settings.tts.local && r.settings.tts.local.target) || 'cpu';
   $('#setCatalogUrl').value = (r.settings.tts.catalog && r.settings.tts.catalog.url) || '';
   $('#setAiProvider').value = (r.settings.ai && r.settings.ai.provider) || '';
   $('#setAiBaseUrl').value = (r.settings.ai && r.settings.ai.base_url) || '';
@@ -1256,7 +1265,10 @@ async function saveSettings() {
     tts: {
       engine: $('#setEngine').value,
       output_format: $('#setOutputFormat').value,
-      local: { backend: $('#setLocalBackend').value },
+      local: {
+        backend: $('#setLocalBackend').value,
+        target: $('#setLocalTarget').value,
+      },
       catalog: { url: $('#setCatalogUrl').value.trim() },
     },
     ai: {
@@ -1320,15 +1332,38 @@ function modelCard(m, kind /* 'installed' | 'catalog' */) {
 
 async function renderRuntime() {
   const r = await api('/api/models/runtime/status');
-  state.models.runtime = { installed: !!r.installed, version: r.version || null };
+  state.models.runtime = {
+    installed: !!r.installed,
+    version: r.version || null,
+    target: r.target || 'cpu',
+    installed_target: r.installed_target || null,
+    target_mismatch: !!r.target_mismatch,
+  };
+  const targetLabel = {
+    'cpu': 'CPU',
+    'amd-rocm': 'AMD ROCm',
+    'nvidia-cuda': 'NVIDIA CUDA',
+  };
+  const tCur = targetLabel[r.target] || r.target;
+  const tIns = r.installed_target ? (targetLabel[r.installed_target] || r.installed_target) : '';
+
   if (r.installed) {
-    $('#rtStatusText').textContent = `已安装 · 版本 ${r.version || '未知'}`;
-    $('#rtInstallBtn').disabled = true;
+    let txt = `已安装 · 版本 ${r.version || '未知'} · 当前变体 ${tIns}`;
+    if (r.target_mismatch) {
+      txt += `  ⚠️ 设置选择的是 ${tCur}，与已装变体不一致，需重装才生效`;
+      $('#rtInstallBtn').disabled = false;
+      $('#rtInstallBtn').textContent = `↻ 重装为 ${tCur}`;
+    } else {
+      $('#rtInstallBtn').disabled = true;
+      $('#rtInstallBtn').textContent = '⬇ 安装本地 TTS 引擎';
+    }
+    $('#rtStatusText').textContent = txt;
     $('#rtUninstallBtn').disabled = false;
     $('#rtVersion').textContent = '';
   } else {
-    $('#rtStatusText').textContent = '未安装';
+    $('#rtStatusText').textContent = `未安装 · 将装 ${tCur} 变体（设置页可切换）`;
     $('#rtInstallBtn').disabled = false;
+    $('#rtInstallBtn').textContent = '⬇ 安装本地 TTS 引擎';
     $('#rtUninstallBtn').disabled = true;
     $('#rtVersion').textContent = '';
   }

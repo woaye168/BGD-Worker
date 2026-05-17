@@ -101,6 +101,7 @@ def get_runtime_installer() -> RuntimeInstaller:
     return LocalTTSRuntimeInstaller(
         install_dir=cfg.local_tts_runtime_dir,
         manifest_url=cfg.tts.catalog.url,
+        target=cfg.tts.local.target,
     )
 
 
