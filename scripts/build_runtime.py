@@ -593,6 +593,59 @@ def _download_fast_langdetect_model(stage: Path) -> None:
         )
 
 
+def _download_g2pw_model(stage: Path) -> None:
+    """预下载 G2PW 多音字消解 ONNX 模型，避免用户首次合成时联网下载。
+
+    GPT-SoVITS chinese2.py 在模块级初始化 G2PWPinyin，默认 model_dir 为
+    GPT_SoVITS/text/G2PWModel。该目录不存在时，onnx_api.py 会尝试从 ModelScope
+    下载 zip 并解压。构建时直接预打包进去。
+    """
+    target_dir = stage / "GPT_SoVITS" / "text" / "G2PWModel"
+    if target_dir.exists() and any(target_dir.iterdir()):
+        logger.info("G2PW model already present: %s", target_dir)
+        return
+
+    zip_url = (
+        "https://www.modelscope.cn/models/kamiorinn/g2pw/"
+        "resolve/master/G2PWModel_1.1.zip"
+    )
+    # 用临时目录下载 + 解压，避免污染 stage
+    with tempfile.TemporaryDirectory(prefix="g2pw-dl-") as tmp:
+        tmp_path = Path(tmp)
+        zip_file = tmp_path / "G2PWModel_1.1.zip"
+        logger.info("downloading G2PW model: %s -> %s", zip_url, zip_file)
+        try:
+            with urllib.request.urlopen(zip_url, timeout=300) as resp:
+                with zip_file.open("wb") as f:
+                    shutil.copyfileobj(resp, f)
+            size_mb = zip_file.stat().st_size / 1024 / 1024
+            logger.info("G2PW model zip downloaded: %.1f MB", size_mb)
+        except Exception:
+            logger.exception("G2PW model download failed")
+            raise SystemExit(
+                "G2PW 模型下载失败（需要外网访问 ModelScope CDN）。"
+                "检查网络或代理后重试。"
+            )
+
+        logger.info("extracting G2PW model ...")
+        _extract_zip(zip_file, tmp_path)
+        extracted = tmp_path / "G2PWModel_1.1"
+        if not extracted.exists():
+            raise SystemExit(
+                "G2PW 模型解压后目录 G2PWModel_1.1 不存在，"
+                "可能是上游压缩包结构变化。"
+            )
+        target_dir.mkdir(parents=True, exist_ok=True)
+        # 把解压目录内容搬到 target_dir（保持 G2PWModel/ 目录名）
+        for item in extracted.iterdir():
+            dst = target_dir / item.name
+            if item.is_dir():
+                shutil.copytree(str(item), str(dst), dirs_exist_ok=True)
+            else:
+                shutil.copy2(str(item), str(dst))
+        logger.info("G2PW model ready at %s", target_dir)
+
+
 def _download_base_models(python_exe: Path, base_models_dir: Path, work_dir: Path) -> None:
     """用 huggingface_hub.snapshot_download 拉基础模型。
 
@@ -845,6 +898,9 @@ def build(version: str, python_version: str, profile: str, out_dir: Path) -> Pat
 
             # 7c. 预下载 fast-langdetect 语言检测模型，避免用户首次合成时联网下载。
             _download_fast_langdetect_model(stage)
+
+            # 7d. 预下载 G2PW 多音字消解 ONNX 模型，避免用户首次合成时联网下载。
+            _download_g2pw_model(stage)
 
         # 8. 复制 serve.py 到 stage 根
         shutil.copy2(_SERVE_PY, stage / "serve.py")
