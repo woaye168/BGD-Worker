@@ -6,9 +6,10 @@
 
 - **栈**：UV (包管理) + FastAPI (HTTP) + Pydantic (类型) + SQLite (持久化, stdlib)
   + edge-tts (云端 TTS) + 本地 TTS 引擎(主 app 侧子进程+HTTP 调 `tts/runtime/serve.py`，
-  GPT-SoVITS 实际推理由 runtime 包提供，运行时按需下载, 仅 Win)
+  GPT-SoVITS V4 实际推理由 runtime 包提供，运行时按需下载, 仅 Win)
   + stdlib urllib (catalog/运行时下载 + 主↔runtime HTTP 通信) + imageio-ffmpeg (捆绑 ffmpeg)
   + pywebview (桌面窗口) + PyInstaller (打包) + Python stdlib logging (日志)
+  + HuggingFace Hub (runtime zip 托管，绕开 GitHub Release 2GB 限制)
 - **架构**：三层依赖单向 DAG，`adapter → logic → contract`
 - **模块**：见根 `.nav` 的 `总览` 行
 - **入口**：`desktop.py` 桌面应用 / `main.py` 开发服务 / `build.py` 打包脚本 /
@@ -17,8 +18,10 @@
   `models/<id>/` (模型) / `runtimes/local-tts/` (本地 TTS 运行时，含 `python/python.exe` +
   `serve.py` + `VERSION`)
 - **CI**：`.github/workflows/ci.yml` (push 任意分支跑冒烟，含 serve.py --mock IPC 校验) +
-  `release.yml`: `v*` tag → PyInstaller 打 app，`runtime-v*` tag → `scripts/build_runtime.py`
-  打本地 TTS 运行时 zip。两者均在 windows-latest，自动上传到各自 Release；其它平台暂不发版。
+  `release.yml`: `v*` tag → PyInstaller 打 app 上传 GitHub Release；
+  `runtime-v*` tag → `scripts/build_runtime.py` 打本地 TTS 运行时 zip 上传 HuggingFace
+  （需 `HF_TOKEN` secret，目标 repo `woaye168/bgd-worker-npc-voice-gen-runtime`）。
+  两者均在 windows-latest；其它平台暂不发版。
 
 ## 工作模式判断
 
@@ -65,6 +68,14 @@
   让 dispatch 引擎与 voice 列表与新状态对齐
 - 本地 TTS 运行时仅支持 Windows（用户产品决策）；其它平台 `LocalTTSEngine.synthesize` /
   `LocalTTSRuntimeInstaller.install` 抛 `TTSError`/`ModelError` 含"暂不支持"友好提示
+- 本地 TTS runtime **仅支持 GPT-SoVITS V4 模型**：base_models 走 V4 路径
+  （`s1v3.ckpt` + `gsv-v4-pretrained/s2Gv4.pth` + 共享 BERT/HuBERT）；
+  meta.json 声明非 v4 时 serve.py 在 `_switch_voice` 抛 `RuntimeError` 引导用户换 V4 模型。
+  V2/V3 支持留 future（需多 base models + Pipeline 多实例缓存；空间敏感）。
+- runtime zip 改挂 HuggingFace（约 2.5-3GB 超 GitHub Release 单文件 2GB 上限）：
+  `huggingface.co/woaye168/bgd-worker-npc-voice-gen-runtime`；
+  上传走 build_runtime.py 的 `--hf-repo` flag + `HF_TOKEN` env 完成；
+  CI 在 step summary 输出实际 sha256 / size / HF URL 供手动回填 catalog.json
 - 本地 TTS 引擎是**主 app 进程 ↔ runtime 子进程**双进程架构：
   - 主 app 侧 `tts/local_engine.py:LocalTTSEngine` 持有一个长驻 `subprocess.Popen` 实例，
     首次 `synthesize` 时懒启动 runtime 子进程并轮询 `GET /health` 等就绪（≤30s），
@@ -169,20 +180,26 @@
 1. 仅 Windows 可跑（`scripts/build_runtime.py` 断言 `sys.platform == 'win32'`）
 2. 两种 profile：
    - `--profile minimal`（≈50MB）：仅 fastapi+uvicorn+pydantic+serve.py；只能 `--mock` 模式跑
-   - `--profile full`（默认，≈1.8GB）：加 CPU torch + GPT-SoVITS 源码 + 基础模型，真实推理
-3. CI 触发：`runtime-v*` tag 推送（与 app 的 `v*` tag 分开发版），用 full profile；产物 zip 自动上传 Release
-4. **当前 full 包受 GitHub Release 单文件 2GB 限制走 CPU torch**：NVIDIA 用户初期也是 CPU 模式
-   （慢但可用）；后续若需 CUDA 加速需出独立的 `local-tts-runtime-cuda-v*` 变体（torch CUDA wheel
-   单个就 ~2GB）
-5. AMD DirectML：当前 serve.py 设计预留了 backend=directml 探测分支，但 GPT-SoVITS 实际
-   `device=cpu` 走 CPU 模式（torch_directml 需要 GPT-SoVITS 代码改造才能真正用上 iGPU）
-6. zip 内层结构（full）：
+   - `--profile full`（默认，≈2.5-3GB）：加 CPU torch + GPT-SoVITS V4 源码 + V4 基础模型，真实推理
+3. CI 触发：`runtime-v*` tag 推送（与 app 的 `v*` tag 分开发版），用 full profile
+4. **runtime zip 改挂 HuggingFace**（≈2.5-3GB 超 GitHub Release 单文件 2GB 上限）：
+   - 上传目标：`huggingface.co/woaye168/bgd-worker-npc-voice-gen-runtime`（公开仓库，免费无限带宽）
+   - CI 用 `HF_TOKEN` secret（write 权限）+ build_runtime.py `--hf-repo` flag 上传
+   - catalog.json 的 `windows_x64.download_url` 指 HF resolve URL
+   - 中国大陆可走 hf-mirror.com 镜像同 URL
+5. **当前包走 CPU torch**：NVIDIA 用户初期也是 CPU 模式（慢但可用）；后续若需 CUDA/AMD ROCm 加速
+   出独立的 `local-tts-runtime-cuda-v*` / `local-tts-runtime-amd-rocm-v*` 变体（都挂 HF 不愁大小）
+6. AMD DirectML：serve.py 设计预留了 backend=directml 探测分支，但 GPT-SoVITS 实际
+   `device=cpu` 走 CPU 模式（torch_directml 需要 GPT-SoVITS 代码改造才能真正用上 iGPU）；
+   AMD Strix Halo / AI Max 395 真加速需用 ROCm 7 Windows nightly torch（独立变体）
+7. zip 内层结构（full，V4）：
    ```
-   {VERSION, serve.py, python/python.exe + Lib/site-packages/...,
-    GPT_SoVITS/, tools/, base_models/{chinese-roberta-wwm-ext-large/, chinese-hubert-base/,
-                                       s1bert25hz-...ckpt, s2G488k.pth}}
+   {VERSION, serve.py, python/python.exe + Lib/site-packages/...（含 stub 模块）,
+    GPT_SoVITS/（pin 20250422v4 tag）, tools/,
+    base_models/{chinese-roberta-wwm-ext-large/, chinese-hubert-base/,
+                 s1v3.ckpt, gsv-v4-pretrained/s2Gv4.pth, gsv-v4-pretrained/vocoder.pth}}
    ```
-7. `LocalTTSRuntimeInstaller._extract_zip` 与 `LocalTTSEngine._ensure_runtime_running` 据此寻路
+8. `LocalTTSRuntimeInstaller._extract_zip` 与 `LocalTTSEngine._ensure_runtime_running` 据此寻路
 
 ### 本地 TTS 模型 meta.json schema（用户导入时需要）
 
@@ -199,7 +216,7 @@
   "ref_text": "...",               // 参考音频的转写文本，强烈建议提供
   "ref_lang": "zh",                // ref_audio 的语言: zh/en/ja
   "text_lang": "zh",               // 输入文本语言: zh/en/ja
-  "gpt_sovits_version": "v2"       // 默认: v2
+  "gpt_sovits_version": "v4"       // 默认: v4；runtime 当前仅支持 v4，meta.json 声明 v2/v3 会被拒
 }
 ```
 模型目录所有文件由 `FileSystemModelStore` 扫描记入 `files/size_bytes`。
