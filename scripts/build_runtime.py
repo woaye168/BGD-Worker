@@ -9,28 +9,32 @@
 #   - 仅 Windows runners：脚本断言 sys.platform == 'win32'
 #   - 默认 Python 3.10.11 embeddable：GPT-SoVITS requirements.txt pin numba==0.56.4，
 #     该版本只支持 Python 3.7-3.10；升级到 3.11+ 需等 GPT-SoVITS 上游解锁 numba
+#   - 默认 GPT-SoVITS clone 到 release tag 20250422v4，对齐 serve.py 的 V4 配置；
+#     与 base_models V4 (s1v3.ckpt + gsv-v4-pretrained/) 配套
 #   - profile=minimal：仅 fastapi+uvicorn+pydantic+serve.py（≈50MB；只能 --mock 模式跑）
-#   - profile=full（默认）：再加 torch(cpu) + 完整 GPT-SoVITS 源码 + 基础模型
-#     （Bert+HuBERT+预训练 GPT/SoVITS；≈1.8-2GB；可真实推理）
+#   - profile=full（默认）：再加 torch(cpu) + 完整 GPT-SoVITS 源码 + V4 基础模型
+#     （BERT≈1.2GB + HuBERT≈400MB + s1v3.ckpt≈155MB + gsv-v4-pretrained/≈827MB；
+#      压缩后 zip ≈ 2.5-3GB，超 GitHub Release 单文件 2GB 上限 → 必须托管 HuggingFace
+#      （见批 3：scripts/build_runtime.py 加 HF 上传 step）
 #   - GPT-SoVITS requirements.txt 经 _filter_requirements 过滤：drop pyopenjtalk(JA, 需 CMake)、
 #     jieba_fast(C ext)、opencc(C++ binding, 嵌入式 Python 缺开发库)、gradio*(webui)、
 #     faster-whisper/funasr(ASR)、modelscope、WeTextProcessing/pynini 等。
 #     被 drop 的包用 _create_stub_packages 建 stub（jieba_fast 透传 jieba；pyopenjtalk 调用时显式抛错）。
 #     opencc 则由 opencc-python-reimplemented 纯 Python 替代，API 兼容。
 #     副作用：runtime 不支持日语合成；中文/英文不受影响
-#   - GitHub Release 单文件上限 2GB；当前选 CPU torch + 单语种基础模型，控制在 2GB 内
-#     （NVIDIA 用户初期落 CPU 模式，等后续 CUDA 变体）
 #   - 产物结构（profile=full）：
 #       <zip-root>/
 #         VERSION
 #         serve.py
 #         python/python.exe + Lib/site-packages/...（含 stub 模块）
-#         GPT_SoVITS/                    ← 从官方仓库克隆
+#         GPT_SoVITS/                    ← 从官方仓库克隆 tag 20250422v4
 #         base_models/
 #           chinese-roberta-wwm-ext-large/
 #           chinese-hubert-base/
-#           s1bert25hz-2kh-longer-epoch=68e-step=50232.ckpt
-#           s2G488k.pth
+#           s1v3.ckpt
+#           gsv-v4-pretrained/
+#             s2Gv4.pth
+#             vocoder.pth
 #   - VERSION 文件内容 = --version 参数；LocalTTSRuntimeInstaller 据此显示 installed_version
 #   - 临时目录使用 tempfile.TemporaryDirectory：失败/中断自动清理
 
@@ -73,16 +77,21 @@ _HF_DOWNLOAD_DEPS = ["huggingface_hub"]
 
 # GPT-SoVITS 仓库 + 基础模型 HF repo
 _GPT_SOVITS_REPO = "https://github.com/RVC-Boss/GPT-SoVITS.git"
-# Pin 到具体 release tag 保证可复现：20240821v2 是纯 V2 时代，TTS_infer_pack API
-# 与 serve.py 的 `version: "v2"` 配置兼容；V2 模型社区资源最丰富。
-# 升级须知：V2Pro / V3 / V4 tag 的 TTS_Config 字段可能漂移，升级时先在 Windows 实机回归一次合成。
-_GPT_SOVITS_REF = "20240821v2"
+# Pin 到 V4 release tag。20250422v4 引入了 48kHz 输出 + 修了 V3 金属音；
+# 与 serve.py V4 配置 (s1v3.ckpt + gsv-v4-pretrained/s2Gv4.pth) 对齐。
+# 升级到更新 tag（如 20250606v2pro）须在 Windows 实机回归一次合成。
+_GPT_SOVITS_REF = "20250422v4"
 _HF_BASE_MODELS_REPO = "lj1995/GPT-SoVITS"
+# V4 需要的 base models（路径以 HF repo 根目录为相对路径）：
+#   - chinese-roberta-wwm-ext-large/：BERT，V2/V3/V4 共用
+#   - chinese-hubert-base/：HuBERT，V2/V3/V4 共用
+#   - s1v3.ckpt：V3+V4 共用 GPT 权重（V2 用的 s1bert25hz... 不下载省空间）
+#   - gsv-v4-pretrained/：V4 SoVITS 主权重 (s2Gv4.pth ~769MB) + 配套 vocoder (~58MB)
 _HF_BASE_MODELS_PATTERNS = [
     "chinese-roberta-wwm-ext-large/**",
     "chinese-hubert-base/**",
-    "s1bert25hz-2kh-longer-epoch=68e-step=50232.ckpt",
-    "s2G488k.pth",
+    "s1v3.ckpt",
+    "gsv-v4-pretrained/**",
 ]
 
 # Build 完成后对 base_models/ 做 fail-fast 校验。两类断言：
@@ -90,12 +99,13 @@ _HF_BASE_MODELS_PATTERNS = [
 #   2) NONEMPTY_DIRS：目录必须存在且非空（容忍 HF 把 pytorch_model.bin 改成 model.safetensors）
 # 防止 HF repo 结构悄改、pattern 静默漏文件，让 serve.py 启动时才炸。
 _BASE_MODELS_REQUIRED_FILES = [
-    "s1bert25hz-2kh-longer-epoch=68e-step=50232.ckpt",
-    "s2G488k.pth",
+    "s1v3.ckpt",
+    "gsv-v4-pretrained/s2Gv4.pth",
 ]
 _BASE_MODELS_REQUIRED_NONEMPTY_DIRS = [
     "chinese-roberta-wwm-ext-large",  # BERT：内部含 config.json + pytorch_model.bin 或 model.safetensors
     "chinese-hubert-base",             # HuBERT：同上
+    "gsv-v4-pretrained",               # V4 SoVITS 主权重 + vocoder
 ]
 
 # 从 GPT-SoVITS requirements.txt 过滤掉的包。原因分两类：
