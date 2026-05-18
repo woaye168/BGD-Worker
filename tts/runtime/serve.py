@@ -528,6 +528,14 @@ def _apply_perf_env_vars() -> None:
         "MIOPEN_FIND_MODE": "FAST",
         "MIOPEN_DEBUG_DISABLE_FIND_DB": "0",
         "ORT_DISABLE_ALL_PROVIDERS_BUT_CPU": "1",
+        "MIOPEN_DEBUG_ENABLE_AI_IMMED_MODE_FALLBACK": "0",
+        "MIOPEN_LOG_LEVEL": "1",
+        "ORT_LOGGING_LEVEL": "4",
+        "TORCH_CPP_LOG_LEVEL": "ERROR",
+        "HSA_ENABLE_SDMA": "0",
+        "HSA_XNACK": "1",
+        "MIOPEN_DISABLE_CACHE": "0",
+        "MIOPEN_DEBUG_DISABLE_FIND_DB": "0",
     }
     applied = []
     for k, v in perf_env.items():
