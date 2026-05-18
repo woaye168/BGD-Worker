@@ -1,8 +1,10 @@
 name: Release
 
 # 触发条件：
-#  - v*           tag → 打包 app（PyInstaller） → 上传到对应 GitHub Release
-#  - runtime-v*   tag → 打包本地 TTS 运行时（含 GPT-SoVITS V4 + 基础模型） → 上传到 HuggingFace
+#  - v*                          tag → 打包 app（PyInstaller） → 上传到对应 GitHub Release
+#  - runtime-v*                  tag → 打包全部 target 运行时（matrix 并发三变体） → HuggingFace
+#  - runtime-<target>-v*         tag → 仅打包指定 target 运行时（单变体） → HuggingFace
+#    target ∈ {cpu, amd-rocm, nvidia-cuda}
 #  - workflow_dispatch：手动选择 target=app 或 target=runtime（runtime 走 HF 需 HF_TOKEN secret）
 # 行为：均在 windows-latest 上跑。
 # 仅支持 Windows（其他平台暂不发版）。
@@ -11,7 +13,12 @@ name: Release
 # 目标 HF repo: woaye168/bgd-worker-npc-voice-gen-runtime（公开、免费、无限带宽）。
 on:
   push:
-    tags: ["v*", "runtime-v*"]
+    tags:
+      - "v*"
+      - "runtime-v*"
+      - "runtime-cpu-v*"
+      - "runtime-amd-rocm-v*"
+      - "runtime-nvidia-cuda-v*"
   workflow_dispatch:
     inputs:
       ref:
@@ -100,17 +107,41 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
 
+  resolve-targets:
+    name: 解析 runtime target 列表
+    if: |
+      startsWith(github.ref, 'refs/tags/runtime-') ||
+      (github.event_name == 'workflow_dispatch' && inputs.target == 'runtime')
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.resolve.outputs.targets }}
+    steps:
+      - id: resolve
+        shell: bash
+        run: |
+          ref="${{ github.ref }}"
+          if [[ "$ref" == refs/tags/runtime-cpu-v* ]]; then
+            echo 'targets=["cpu"]' >> "$GITHUB_OUTPUT"
+          elif [[ "$ref" == refs/tags/runtime-amd-rocm-v* ]]; then
+            echo 'targets=["amd-rocm"]' >> "$GITHUB_OUTPUT"
+          elif [[ "$ref" == refs/tags/runtime-nvidia-cuda-v* ]]; then
+            echo 'targets=["nvidia-cuda"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'targets=["cpu","amd-rocm","nvidia-cuda"]' >> "$GITHUB_OUTPUT"
+          fi
+
   build-runtime:
     name: "打包 runtime [${{ matrix.target }}]"
-    # runtime-v* tag 或 workflow_dispatch target=runtime
+    needs: resolve-targets
+    # runtime-* tag（含 runtime-v* / runtime-cpu-v* 等）或 workflow_dispatch target=runtime
     if: |
-      startsWith(github.ref, 'refs/tags/runtime-v') ||
+      startsWith(github.ref, 'refs/tags/runtime-') ||
       (github.event_name == 'workflow_dispatch' && inputs.target == 'runtime')
     runs-on: windows-latest
     strategy:
       fail-fast: false  # 一个 target 炸不影响别的 target 继续
       matrix:
-        target: [cpu, amd-rocm, nvidia-cuda]
+        target: ${{ fromJSON(needs.resolve-targets.outputs.targets) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -125,17 +156,19 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           set -o pipefail
-          # ref_name 形如 runtime-v0.3.0 → 提取 0.3.0；workflow_dispatch 时退回时间戳
+          # ref_name 形如 runtime-v0.3.0 / runtime-cpu-v0.3.0 → 提取 0.3.0
           raw="${{ github.ref_name }}"
-          if [[ "$raw" == runtime-v* ]]; then
-            ver="${raw#runtime-v}"
+          if [[ "$raw" == runtime-*-v* ]]; then
+            ver="${raw##*-v}"      # 从最后一个 -v 之后取: runtime-cpu-v0.3.0 → 0.3.0
+          elif [[ "$raw" == runtime-v* ]]; then
+            ver="${raw#runtime-v}" # runtime-v0.3.0 → 0.3.0
           else
             ver="manual-$(date +%Y%m%d-%H%M%S)"
           fi
           echo "RUNTIME_VERSION=$ver" >> $GITHUB_ENV
           target="${{ matrix.target }}"
           # tag push 才上传 HF；workflow_dispatch（手动跑）只生成 artifact 不污染 HF
-          if [[ "${{ github.ref }}" == refs/tags/runtime-v* ]]; then
+          if [[ "${{ github.ref }}" == refs/tags/runtime-* ]]; then
             HF_REPO="${HF_REPO:-woaye168/bgd-worker-npc-voice-gen-runtime}"
             uv run python scripts/build_runtime.py \
               --version "$ver" --out dist --target "$target" \
