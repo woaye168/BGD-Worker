@@ -99,7 +99,7 @@ def get_catalog() -> ModelCatalog:
 def get_runtime_installer() -> RuntimeInstaller:
     cfg = get_config()
     return LocalTTSRuntimeInstaller(
-        install_dir=cfg.local_tts_runtime_dir,
+        install_dir=cfg.local_tts_runtime_dir(cfg.tts.local.target),
         manifest_url=cfg.tts.catalog.url,
         target=cfg.tts.local.target,
     )
@@ -113,11 +113,11 @@ def get_tts_engine() -> TTSEngine:
         ffmpeg_path=cfg.tts.ffmpeg_path,
     )
     local = LocalTTSEngine(
-        runtime_dir=cfg.local_tts_runtime_dir,
+        runtime_dir=cfg.active_local_tts_runtime_dir,
         model_store=get_model_store(),
         output_format=cfg.tts.output_format,
         ffmpeg_path=cfg.tts.ffmpeg_path,
-        backend=cfg.tts.local.backend,
+        target=cfg.tts.local.target,
         synthesize_timeout_sec=cfg.tts.local.synthesize_timeout_sec,
         log_dir=cfg.log_dir,
     )

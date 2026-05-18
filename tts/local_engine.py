@@ -1,7 +1,7 @@
 # @purpose: 本地 TTS 引擎适配（在主 app 侧；通过子进程+HTTP 调用 runtime/serve.py 完成实际合成）
 # @layer: adapter
 # @contract:
-#   - LocalTTSEngine(runtime_dir, model_store, output_format, ffmpeg_path, backend).{
+#   - LocalTTSEngine(runtime_dir, model_store, output_format, ffmpeg_path, target).{
 #       output_extension, synthesize, list_voices, close}
 # @depends:
 #   - asyncio, atexit, contextlib, json, logging, socket, subprocess, sys (stdlib)
@@ -13,7 +13,7 @@
 #   - ./_ffmpeg.py: resolve_ffmpeg, transcode
 # @invariants:
 #   - 平台门禁：sys.platform != 'win32' 时 synthesize 抛 TTSError("暂不支持")；list_voices 不抛
-#   - 运行时门禁：runtime_dir/VERSION 不存在 → synthesize 抛 TTSError 提示去「模型管理」装运行时
+#   - 运行时门禁：runtime_dir/VERSION 不存在 → synthesize 抛 TTSError 提示去「软件设置」装运行时
 #   - 模型门禁：voice 在 ModelStore 中不存在 → synthesize 抛 TTSError
 #   - 子进程：一个 LocalTTSEngine 实例持有 1 个长驻 serve.py 子进程；首次 synthesize 时懒启动
 #     - 端口选择：bind 到 127.0.0.1:0 取得 OS 分配的端口后立即 close 再传给子进程（轻微 race，本机可接受）
@@ -23,6 +23,8 @@
 #   - HTTP 调用：urllib + asyncio.to_thread；POST /synthesize 收 audio/wav bytes
 #   - voice 入参假定已被 dispatch 层剥掉 "local:" 前缀（裸 model_id）
 #   - output_extension：runtime 产 wav；ogg 经 _ffmpeg.transcode 转码（缺 ffmpeg 时构造期降级 wav）
+#   - backend 自动推导：target → serve.py --backend auto（serve.py detect_backend 自动选）；
+#     用户不再可见 backend 维度，旧 settings.json 的 backend 字段被 Pydantic 忽略
 
 from __future__ import annotations
 
@@ -156,7 +158,7 @@ class LocalTTSEngine:
         model_store: ModelStore,
         output_format: str = "ogg",
         ffmpeg_path: Optional[str] = None,
-        backend: str = "auto",
+        target: str = "cpu",
         synthesize_timeout_sec: float = _DEFAULT_SYNTHESIZE_TIMEOUT_SEC,
         log_dir: Optional[Path] = None,
     ) -> None:
@@ -171,7 +173,7 @@ class LocalTTSEngine:
             # local 无 mp3 编码器；与 edge 不一致时仅当 single-engine 配置才走 mp3
             fmt = "wav"
         self._format = fmt
-        self._backend = backend
+        self._target = target
         self._synthesize_timeout = max(30.0, float(synthesize_timeout_sec))
         self._log_dir = Path(log_dir) if log_dir else None
         self._log_file: Optional[Path] = None
@@ -180,9 +182,9 @@ class LocalTTSEngine:
         self._port: Optional[int] = None
         self._spawn_lock = asyncio.Lock()
         logger.info(
-            "local_tts engine: requested=%s effective=%s backend=%s timeout=%.0fs"
+            "local_tts engine: requested=%s effective=%s target=%s timeout=%.0fs"
             " runtime=%s log_dir=%s ffmpeg=%s",
-            requested, self._format, self._backend, self._synthesize_timeout,
+            requested, self._format, self._target, self._synthesize_timeout,
             self._runtime_dir, self._log_dir, self._ffmpeg or "<none>",
         )
 
@@ -254,7 +256,7 @@ class LocalTTSEngine:
         # 2. 运行时门禁
         if not (self._runtime_dir / _VERSION_FILE).exists():
             raise TTSError(
-                "本地 TTS 运行时未安装。请到「模型管理」页点击「安装本地 TTS 引擎」"
+                f"本地 TTS 运行时未安装（target={self._target}）。请到「软件设置」安装"
             )
         # 3. 输入校验
         if not voice:
@@ -348,7 +350,7 @@ class LocalTTSEngine:
                 str(serve_py),
                 "--port", str(port),
                 "--model-root", str(model_root),
-                "--backend", self._backend,
+                "--backend", "auto",
             ]
             # 打开 runtime 日志文件（合并 stdout + stderr，写文件而不是 PIPE —— 否则 buffer
             # 满了子进程会阻塞，是经典的 Popen 坑：之前 502/500 实际就是这个炸的）

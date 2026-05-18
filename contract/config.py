@@ -2,7 +2,7 @@
 # @layer: contract
 # @contract:
 #   - default_data_dir() -> Path
-#   - LocalTTSSettings(backend, runtime_installed, runtime_version)
+#   - LocalTTSSettings(target, runtime_installed, runtime_version, synthesize_timeout_sec)
 #   - CatalogSettings(url, cache_ttl_sec)
 #   - AISettings(provider, base_url, api_key, model)   # 远期 AI 对话/情感生成预留壳
 #   - TTSSettings(engine, default_voice, output_format, ffmpeg_path, rest_base_url, rest_model,
@@ -10,7 +10,9 @@
 #   - LogSettings(enabled, level, to_file)
 #   - AppConfig(data_dir, audio_dir_override, tts, log, ai)
 #       + 派生属性 audio_dir / settings_file / log_dir / db_file / characters_file / dialogues_file
-#                / models_dir / runtimes_dir / local_tts_runtime_dir
+#                / models_dir / runtimes_dir
+#       + 方法 local_tts_runtime_dir(target) -> Path  # 按 target 返回独立目录
+#       + 属性 active_local_tts_runtime_dir -> Path   # 等价于 local_tts_runtime_dir(tts.local.target)
 #       + load() / save() / ensure_dirs()
 # @depends:
 #   - pydantic
@@ -20,15 +22,21 @@
 #   - audio_dir 默认 data_dir/audio；audio_dir_override 非空时优先（用户在设置页指定的自定义目录）
 #   - audio_dir_override 变更只影响"下次合成"产物落盘位置；既有 audio_path 不会迁移
 #   - models_dir = data_dir/models；每个模型一个子目录（id 为目录名）
-#   - runtimes_dir = data_dir/runtimes；local_tts_runtime_dir = runtimes_dir/local-tts
-#     运行时路径始终从 data_dir 派生，禁止持久化绝对路径（避免机器迁移失效）
+#   - runtimes_dir = data_dir/runtimes
+#   - local_tts_runtime_dir(target) 默认 runtimes_dir/local-tts-<target>；
+#     target=='cpu' 时，若 legacy runtimes_dir/local-tts 存在且 canonical 路径不存在，
+#     则返回 legacy 路径（兼容 v0.0.7 之前 cpu 装在无 target 后缀的目录）
+#   - 多 target 并存原则：切换 target 不删任何已装 runtime；每个 target 装到独立目录
+#   - 运行时路径始终从 data_dir 派生，禁止持久化绝对路径（避免机器迁移失效）
 #   - 冻结模式(PyInstaller)下 data_dir 落到用户家目录；NPC_VOICE_DATA_DIR 环境变量可覆盖
 #   - 所有路径在 ensure_dirs() 内创建（含 log_dir，仅在 log.to_file 为真时）
 #   - tts.output_format ∈ {'ogg','mp3','wav'}；'ogg'/'wav' 需 ffmpeg，引擎层负责回退
 #   - tts.engine 是"默认引擎"标记，仅当 Character.voice 无前缀时被使用（dispatch 兜底）
-#   - tts.local.backend ∈ {'auto','cuda','directml','cpu'}；'auto' 由 local_engine 启动期探测
-#   - tts.local.runtime_installed 表示本地 TTS 运行时是否已下载安装（用户在"模型管理"页触发）
-#   - tts.catalog.url 是模型目录/运行时 manifest 的 GitHub Release JSON URL；默认指向项目仓库 catalog.json（含运行时 windows_x64 元数据），用户仍可通过设置页覆盖
+#   - tts.local.target ∈ {'cpu','amd-rocm','nvidia-cuda'}；决定本地 TTS 用哪个变体（活跃指向）
+#   - tts.local.target 切换不删旧变体；UI 显示三变体各自安装状态（LM Studio 风格）
+#   - tts.local.runtime_installed / runtime_version 反映"当前 active target 是否已装 + 版本号"；
+#     UI 切换 target 后由后端按当前 target 的真实状态刷新这两个字段（保持向后兼容）
+#   - tts.catalog.url 是模型目录/运行时 manifest 的 GitHub Release JSON URL；默认指向项目仓库 catalog.json（含运行时 windows_x64_* 元数据），用户仍可通过设置页覆盖
 #   - ai.provider/api_key 当前仅占位，未在合成路径使用（Phase 3 远期接入）
 #   - log.level ∈ {'debug','info','warning','error'}；变更需调 api.logging_setup.setup_logging 生效
 #   - load() 不存在或损坏时回退默认值，不抛异常；data_dir 始终来自 default_data_dir()，不从文件读
@@ -54,20 +62,24 @@ def default_data_dir() -> Path:
 
 
 class LocalTTSSettings(BaseModel):
-    """本地 TTS 引擎子设置（运行时下载/后端选择/硬件 target）。
+    """本地 TTS 引擎子设置（运行时下载/硬件 target 变体）。
 
     runtime_installed=False 时，dispatch 收到 'local:xxx' voice 会返回友好错误，
-    提示用户先在"模型管理"页安装运行时。
+    提示用户先在「软件设置」安装运行时。
+
+    设计取舍：删除了旧的 backend 字段，target 是用户唯一可见维度。
+    serve.py 内部用 --backend auto 自动探测（ROCm/CUDA 都暴露为 cuda API，
+    cpu 兜底），用户无需也无法手选 backend。
     """
 
-    backend: str = "auto"  # auto|cuda|directml|cpu (传给 runtime serve.py 用于 torch 设备选择)
     runtime_installed: bool = False
     runtime_version: Optional[str] = None
-    # 推理硬件 target，决定从 catalog 哪个段下载 runtime zip：
+    # 推理硬件 target，决定从 catalog 哪个段下载 runtime zip + 用哪个 torch wheel：
     # - "cpu" (默认)：所有机器兜底，PyPI cpu torch wheel
     # - "amd-rocm"：AMD AI Max 395 / Radeon 8060S 等 Strix Halo gfx1151；ROCm nightly torch
     # - "nvidia-cuda"：NVIDIA 显卡（RTX 4070 等）；cu126 torch wheel
-    # 切 target 后会触发 runtime 自动重装（旧变体的 VERSION 文件不匹配）。
+    # 切 target 仅切换"活跃指向"（runtime_installed/version 字段刷新为新 target 的状态），
+    # 不删任何已装变体；多 target 在 runtimes/local-tts-<target>/ 并存。
     target: str = "cpu"
     # 单次合成 HTTP 请求超时（秒）。首次合成需懒加载基础模型（BERT≈1GB、HuBERT≈400MB、
     # GPT≈150MB、SoVITS≈80MB）+ 切 voice 权重，CPU 模式可能 300-600s；慢机器/老 HDD 还要更久。
@@ -151,10 +163,25 @@ class AppConfig(BaseModel):
         """运行时存储根目录：每种引擎一个子目录。"""
         return self.data_dir / "runtimes"
 
+    def local_tts_runtime_dir(self, target: str) -> Path:
+        """返回指定 target 的本地 TTS 运行时安装目录。
+
+        canonical 路径: runtimes/local-tts-<target>
+        cpu legacy 兼容: 若 target=='cpu' 且 runtimes/local-tts 存在而 canonical 不存在，
+        则返回 legacy 路径（v0.0.7 之前 cpu 装在无 target 后缀目录）。
+        多 target 并存：每个 target 独立目录，切换 target 不删旧装。
+        """
+        canonical = self.runtimes_dir / f"local-tts-{target}"
+        if target == "cpu":
+            legacy = self.runtimes_dir / "local-tts"
+            if legacy.exists() and not canonical.exists():
+                return legacy
+        return canonical
+
     @property
-    def local_tts_runtime_dir(self) -> Path:
-        """本地 TTS 运行时目录：runtimes/local-tts。"""
-        return self.runtimes_dir / "local-tts"
+    def active_local_tts_runtime_dir(self) -> Path:
+        """当前活跃 target 的运行时目录（语法糖：等价于 local_tts_runtime_dir(tts.local.target)）。"""
+        return self.local_tts_runtime_dir(self.tts.local.target)
 
     def ensure_dirs(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
