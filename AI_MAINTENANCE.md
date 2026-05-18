@@ -13,14 +13,16 @@
 - **架构**：三层依赖单向 DAG，`adapter → logic → contract`
 - **模块**：见根 `.nav` 的 `总览` 行
 - **入口**：`desktop.py` 桌面应用 / `main.py` 开发服务 / `build.py` 打包脚本 /
-  `scripts/build_runtime.py` 本地 TTS 运行时打包脚本（Win-only，CI 用）
+  `scripts/build_runtime/` 本地 TTS 运行时打包包（Win-only，CI 用）
 - **运行时根**：`AppConfig.data_dir` 派生 `app.db` / `audio/` / `logs/` / `settings.json` /
-  `models/<id>/` (模型) / `runtimes/local-tts/` (本地 TTS 运行时，含 `python/python.exe` +
-  `serve.py` + `VERSION`)
+  `models/<id>/` (模型) / `runtimes/local-tts-<target>/` (本地 TTS 运行时，含 `python/python.exe` +
+  `serve.py` + `VERSION`；多 target 变体各自独立目录，切 target 不删旧变体)
 - **CI**：`.github/workflows/ci.yml` (push 任意分支跑冒烟，含 serve.py --mock IPC 校验) +
-  `release.yml`: `v*` tag → PyInstaller 打 app 上传 GitHub Release；
-  `runtime-v*` tag → `scripts/build_runtime.py` 打本地 TTS 运行时 zip 上传 HuggingFace
-  （需 `HF_TOKEN` secret，目标 repo `woaye168/bgd-worker-npc-voice-gen-runtime`）。
+  `release.yml`:
+  - `v*` tag → PyInstaller 打 app 上传 GitHub Release
+  - `runtime-cpu-v*` / `runtime-amd-rocm-v*` / `runtime-nvidia-cuda-v*` tag →
+    `scripts/build_runtime/` 打对应 target 本地 TTS 运行时 zip 上传 HuggingFace
+    （需 `HF_TOKEN` secret，目标 repo `woaye168/bgd-worker-npc-voice-gen-runtime`）
   两者均在 windows-latest；其它平台暂不发版。
 
 ## 工作模式判断
@@ -74,20 +76,21 @@
   V2/V3 支持留 future（需多 base models + Pipeline 多实例缓存；空间敏感）。
 - runtime zip 改挂 HuggingFace（约 2.5-7GB 超 GitHub Release 单文件 2GB 上限）：
   `huggingface.co/woaye168/bgd-worker-npc-voice-gen-runtime`；
-  上传走 build_runtime.py 的 `--hf-repo` flag + `HF_TOKEN` env 完成；
+  上传走 `scripts/build_runtime/build.py --hf-repo` flag + `HF_TOKEN` env 完成；
   CI 在 step summary 输出实际 sha256 / size / HF URL 供手动回填 catalog.json
 - runtime 支持 **多硬件 target 变体**（`cpu` / `amd-rocm` / `nvidia-cuda`）：
-  - `LocalTTSSettings.target` 决定下载哪个变体；`backend` 仍传给 serve.py 当 torch device 字符串
-  - `scripts/build_runtime.py --target <t>` 按 target 切 torch wheel 源
+  - `LocalTTSSettings.target` 决定当前激活哪个变体；serve.py 用 `--backend auto` 自探测 torch device
+  - `scripts/build_runtime/ --target <t>` 按 target 切 torch wheel 源
     （cpu→PyPI cpu / amd-rocm→ROCm gfx1151 nightly / nvidia-cuda→cu126）；
     zip 文件名 `local-tts-runtime-<target>-v<ver>.zip` 自带 target 区分
-  - `catalog.json` schema：`windows_x64_<target>` 三段并存 + 旧 `windows_x64` 段作 cpu fallback；
-    `LocalTTSRuntimeInstaller(target=...)` 按 `_manifest_slot_key(target)` 选段
+  - `catalog.json` schema v2：各 `windows_x64_<target>` slot 自带 `version` 字段；
+    `LocalTTSRuntimeInstaller(target=...)` 按 `_manifest_slot_key(target)` 选段读取版本
   - `VERSION` 文件 `<ver> <target>` 格式；旧格式（仅版本号）默认 cpu
-  - 切 target 触发自动重装：UI 设置改 target → 模型管理状态显示 target_mismatch=true →
-    "重装为 X" 按钮 → `/runtime/install` 端点检测后先 uninstall 旧变体再 install 新的
-  - CI release.yml `build-runtime` job 用 matrix `target: [cpu, amd-rocm, nvidia-cuda]`，
-    一个 `runtime-v*` tag push 并发出三个 zip
+  - **多 target 并存，切 target 不删旧变体**：各 target 装到独立目录 `runtimes/local-tts-<target>/`；
+    切 target 后只需重新加载 runtime（UI 提示"重载为 X"），旧变体保留可随时切回
+  - CI release.yml `build-runtime` job 用 dynamic matrix：
+    `resolve-targets` job 从 tag 名（如 `runtime-cpu-v0.3.0`）推导 target 数组；
+    各 target 独立 tag 可独立发版
 - 本地 TTS 引擎是**主 app 进程 ↔ runtime 子进程**双进程架构：
   - 主 app 侧 `tts/local_engine.py:LocalTTSEngine` 持有一个长驻 `subprocess.Popen` 实例，
     首次 `synthesize` 时懒启动 runtime 子进程并轮询 `GET /health` 等就绪（≤30s），
@@ -122,10 +125,13 @@
 - 设置变更后必须调用 `api.deps:invalidate_caches()` 清空 lru_cache，否则单例（含 config/audio_store/tts/
   model_store/catalog/runtime_installer）会保留旧值；audio_dir_override 变更**只影响下次新合成的
   落盘位置**，既有 audio_path 不迁移
-- 模型 catalog JSON 形状：`{"version": str, "windows_x64": {download_url, sha256, size_bytes},
+- 模型 catalog JSON 形状（schema v2）：`{"version": str,
+  "windows_x64_cpu": {download_url, sha256, size_bytes, version},
+  "windows_x64_amd_rocm": {download_url, sha256, size_bytes, version},
+  "windows_x64_nvidia_cuda": {download_url, sha256, size_bytes, version},
   "models": [{id, engine, name, character, license, download_url, sha256, size_bytes, ...}]}`；
-  `windows_x64` 段供 `RuntimeInstaller` 消费，`models` 段供 `ModelCatalog` 消费；
-  二者共用同一个 `tts.catalog.url`
+  `windows_x64_*` 段供 `RuntimeInstaller` 消费（各 target 独立 version），
+  `models` 段供 `ModelCatalog` 消费；二者共用同一个 `tts.catalog.url`
 - 模型目录约定：`data_dir/models/<model_id>/` 必含 `meta.json`（id/engine/name 必填，
   license/character/language 选填）；其余文件由 `FileSystemModelStore` 扫描记入 files/size_bytes，
   以**目录名**为权威（覆盖 meta.json 中的 id 字段）
@@ -168,7 +174,7 @@
 1. 在 `contract/models.py:Emotion` 枚举添加新成员
 2. 在 `synthesis/emotion_mapper.py` 两张表中各加一条
 3. 在 `dialogue/importer.py:_EMOTION_ALIASES` 加中/英文别名（供剧本/CSV 解析识别）
-4. (可选) 更新前端 `web/index.html` 的 `EMOTIONS` 映射
+4. (可选) 更新前端 `web/characters.js` / `web/dialogues-form.js` 的 `EMOTIONS` 映射
 5. 跑现有 dialogue 数据兼容性 (旧 JSON 里没有该值不会破坏)
 
 ### 添加新音频格式
@@ -189,15 +195,15 @@
 
 ### 打包本地 TTS 运行时 (Win 专属，独立于 app 发版)
 
-1. 仅 Windows 可跑（`scripts/build_runtime.py` 断言 `sys.platform == 'win32'`）
+1. 仅 Windows 可跑（`scripts/build_runtime/build.py` 断言 `sys.platform == 'win32'`）
 2. 两种 profile：
    - `--profile minimal`（≈50MB）：仅 fastapi+uvicorn+pydantic+serve.py；只能 `--mock` 模式跑
    - `--profile full`（默认，≈2.5-3GB）：加 CPU torch + GPT-SoVITS V4 源码 + V4 基础模型，真实推理
-3. CI 触发：`runtime-v*` tag 推送（与 app 的 `v*` tag 分开发版），用 full profile
+3. CI 触发：`runtime-cpu-v*` / `runtime-amd-rocm-v*` / `runtime-nvidia-cuda-v*` tag 推送（与 app 的 `v*` tag 分开发版），用 full profile
 4. **runtime zip 改挂 HuggingFace**（≈2.5-3GB 超 GitHub Release 单文件 2GB 上限）：
    - 上传目标：`huggingface.co/woaye168/bgd-worker-npc-voice-gen-runtime`（公开仓库，免费无限带宽）
-   - CI 用 `HF_TOKEN` secret（write 权限）+ build_runtime.py `--hf-repo` flag 上传
-   - catalog.json 的 `windows_x64.download_url` 指 HF resolve URL
+   - CI 用 `HF_TOKEN` secret（write 权限）+ `scripts/build_runtime/build.py --hf-repo` flag 上传
+   - catalog.json 的 `windows_x64_<target>.download_url` 指 HF resolve URL
    - 中国大陆可走 hf-mirror.com 镜像同 URL
 5. **当前包走 CPU torch**：NVIDIA 用户初期也是 CPU 模式（慢但可用）；后续若需 CUDA/AMD ROCm 加速
    出独立的 `local-tts-runtime-cuda-v*` / `local-tts-runtime-amd-rocm-v*` 变体（都挂 HF 不愁大小）
@@ -250,4 +256,4 @@
 2. 通过 PUT `/api/settings` 即可读写（路由用 `_deep_merge` 自动处理嵌套子对象）
 3. 若变更需要副作用（如 audio_dir 改后要重建 audio_store），在 `routes_settings.update_settings`
    的"应用阶段"加对应处理（当前已 `invalidate_caches + setup_logging`）
-4. 前端在 `web/index.html` 设置页添加对应 UI 控件并接到 `loadSettings/saveSettings`
+4. 前端在 `web/settings.js` 添加对应 UI 控件并接到 `loadSettings/saveSettings`（设置页 HTML 模板在 `web/index.html` 基础框架中）

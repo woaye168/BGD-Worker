@@ -1,4 +1,4 @@
 职责: FastAPI HTTP接口、依赖注入、静态前端挂载、全局日志、运行时设置、模型管理
 出口: create_app, setup_logging, install_request_logging
 入口: ../contract, ../character, ../dialogue, ../synthesis, ../storage, ../tts
-子图: app:应用工厂+异常映射(含 ModelError→502)+启动日志, deps:依赖注入+缓存失效(含 model_store/catalog/runtime_installer; tts engine 返回 DispatchTTSEngine 含 edge+local 子引擎), logging_setup:控制台+滚动文件+请求中间件, routes_character/routes_dialogue/routes_synthesis/routes_settings:四组路由, routes_models:模型管理(已安装/在线catalog/SSE下载/zip导入/运行时安装卸载)
+子图: app:应用工厂+异常映射(含 ModelError→502)+启动日志, deps:依赖注入+缓存失效(含 model_store/catalog/runtime_installer; tts engine 返回 DispatchTTSEngine 含 edge+local 子引擎), logging_setup:控制台+滚动文件+请求中间件, routes_character/routes_dialogue/routes_synthesis/routes_settings:四组路由, routes_models:模型管理(已安装/在线catalog/SSE下载/zip导入/运行时安装卸载; /runtime/status 返回全 target 数组; /runtime/install 接收 body.target; /catalog/refresh 强制刷新)

@@ -1,4 +1,4 @@
 职责: 领域类型、配置、错误、端口协议（最稳定层）
 出口: Character, Dialogue, Emotion, SynthesisScope, SynthesisRequest, SynthesisResult, TTSModel, AppConfig, TTSSettings, LocalTTSSettings, CatalogSettings, AISettings, LogSettings, default_data_dir, TTSEngine, CharacterRepository, DialogueRepository, AudioStore, ModelStore, ModelCatalog, RuntimeInstaller, DomainError, NotFoundError, ValidationError, TTSError, StorageError, ModelError
 入口: 无（contract 层禁止依赖业务）
-子图: models:领域模型(含 TTSModel), config:应用配置(含 local/catalog/ai 子设置 + models_dir/runtimes_dir 派生路径), errors:领域错误(含 ModelError), ports:跨层协议接口(含 ModelStore/ModelCatalog/RuntimeInstaller)
+子图: models:领域模型(含 TTSModel), config:应用配置(含 local/catalog/ai 子设置 + models_dir/runtimes_dir 派生路径; LocalTTSSettings 仅 target 无 backend), errors:领域错误(含 ModelError), ports:跨层协议接口(含 ModelStore/ModelCatalog/RuntimeInstaller; RuntimeInstaller 含 installed_target())
