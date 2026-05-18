@@ -76,6 +76,14 @@ def _build_pipeline(runtime_root: Path):
         device_str,
     )
 
+    # 关键：torchaudio 2.6+ 默认后端是 torchcodec（需 FFmpeg DLL），嵌入式环境装不上 →
+    # 必须 monkey patch torchaudio.load 走 soundfile 后端，否则 _get_ref_spec 直接炸。
+    # 与 serve.py 同套逻辑。
+    _patch_torchaudio_load_to_soundfile(torch)
+
+    # ffmpeg PATH：tools/my_utils.py 用 ffmpy 调 ffmpeg 命令行，必须 PATH 能找到
+    _ensure_ffmpeg_in_path()
+
     base_models = runtime_root / "base_models"
     from GPT_SoVITS.TTS_infer_pack.TTS import TTS, TTS_Config
 
@@ -96,6 +104,39 @@ def _build_pipeline(runtime_root: Path):
     pipeline = TTS(config)
     logger.info("pipeline ready in %.1fs", time.time() - t0)
     return pipeline
+
+
+def _patch_torchaudio_load_to_soundfile(torch_mod) -> None:
+    """torchaudio.load → soundfile（同 serve.py:_ensure_pipeline 的逻辑）。"""
+    try:
+        import torchaudio  # type: ignore[import-not-found]
+        import soundfile as sf  # type: ignore[import-not-found]
+
+        def _torchaudio_load_with_soundfile(filepath, *args, **kwargs):
+            data, sr = sf.read(str(filepath), dtype="float32")
+            if data.ndim == 1:
+                tensor = torch_mod.from_numpy(data).unsqueeze(0)
+            else:
+                tensor = torch_mod.from_numpy(data.T)
+            return tensor, sr
+
+        torchaudio.load = _torchaudio_load_with_soundfile  # type: ignore[assignment]
+        logger.info("patched torchaudio.load -> soundfile")
+    except Exception as e:
+        logger.warning("torchaudio.load patch failed: %s", e)
+
+
+def _ensure_ffmpeg_in_path() -> None:
+    """把 imageio_ffmpeg 的 ffmpeg dir 加进 PATH（同 serve.py）。"""
+    try:
+        import imageio_ffmpeg  # type: ignore[import-not-found]
+        ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+        ffmpeg_dir = str(Path(ffmpeg_path).parent)
+        if ffmpeg_dir not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
+        logger.info("ffmpeg dir added to PATH: %s", ffmpeg_dir)
+    except Exception as e:
+        logger.warning("imageio_ffmpeg setup failed: %s", e)
 
 
 def _switch_voice(pipeline, model_dir: Path, meta: dict) -> dict:
