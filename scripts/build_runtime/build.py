@@ -54,6 +54,40 @@ from .packaging import (
 logger = logging.getLogger("build_runtime")
 
 
+def _strip_ort_cuda_provider(python_dir: Path) -> int:
+    """删除 onnxruntime 的 CUDA EP DLL（cpu / amd-rocm runtime 不需要）。
+
+    背景：onnxruntime（GPT-SoVITS G2PW 多音字消解依赖）默认 providers 顺序
+    [CUDAExecutionProvider, CPUExecutionProvider]。CUDA EP DLL 存在但
+    cublasLt64_12.dll 缺失时（amd-rocm / cpu 包都没装 CUDA runtime） →
+    抛 "Error loading ... cublasLt64_12.dll missing" 错误日志，干扰用户排查。
+
+    干脆删 onnxruntime_providers_cuda.dll：ORT 找不到该 EP 不会尝试加载，
+    日志干净 + 启动略快。nvidia-cuda 包保留（用户有 NV CUDA runtime，能加载成功）。
+
+    返回删除的文件数；找不到则返回 0（不抛错）。
+    """
+    site_packages = python_dir / "Lib" / "site-packages"
+    ort_capi = site_packages / "onnxruntime" / "capi"
+    if not ort_capi.exists():
+        return 0
+    patterns = ("onnxruntime_providers_cuda*.dll", "onnxruntime_providers_tensorrt*.dll")
+    removed = 0
+    for pat in patterns:
+        for p in ort_capi.glob(pat):
+            try:
+                p.unlink()
+                removed += 1
+                logger.info("strip ORT EP: %s", p.relative_to(site_packages))
+            except Exception as e:
+                logger.warning("strip ORT EP failed: %s (%s)", p, e)
+    if removed:
+        logger.info("stripped %d ORT CUDA/TRT EP DLLs from amd-rocm/cpu runtime", removed)
+    else:
+        logger.info("no ORT CUDA EP DLL found to strip (probably onnxruntime CPU-only wheel)")
+    return removed
+
+
 def _make_zip(src_dir: Path, out_zip: Path) -> None:
     logger.info("zip %s -> %s", src_dir, out_zip)
     out_zip.parent.mkdir(parents=True, exist_ok=True)
@@ -199,6 +233,12 @@ def build(
             _mirror_v4_pretrained_for_hardcoded_paths(stage, base_models)
             _download_fast_langdetect_model(stage)
             _download_g2pw_model(stage)
+
+            # 7.5 非 nvidia-cuda 包：清掉 onnxruntime 的 CUDA EP DLL
+            # 否则启动时 ORT 会试图加载 CUDA EP（cublasLt64_12.dll missing → 错误日志噪声 +
+            # 启动稍慢）。CPU EP 处理 GPT-SoVITS 的 G2PW（多音字 ONNX 模型）已够用。
+            if target != "nvidia-cuda":
+                _strip_ort_cuda_provider(python_dir)
 
         # 8. 复制 serve.py 到 stage 根
         shutil.copy2(_SERVE_PY, stage / "serve.py")

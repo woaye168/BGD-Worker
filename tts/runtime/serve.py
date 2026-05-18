@@ -260,11 +260,24 @@ def _ensure_pipeline() -> object:
             f"可能某个被 stub/drop 的包在模块级被 GPT-SoVITS 引用）"
         ) from e
 
-    # 设备 + 半精度策略
-    # - cuda：fp16 加速（fp32 兜底）
-    # - cpu / directml：必须 fp32（half 不稳定）
-    is_half = _BACKEND == "cuda"
+    # 设备 + 半精度策略：
+    # - NVIDIA CUDA：fp16 加速（fp32 兜底）
+    # - AMD ROCm (torch.version.hip is not None)：**强制 fp32**
+    #   - RDNA3/3.5 (gfx1151/Strix Halo) 上 MIOpen FP16 路径优化未必比 FP32 快
+    #   - 实测见日志：is_half=True 下 0.15× realtime 远不及预期；先 fp32 看稳定 baseline
+    # - cpu / directml：必须 fp32
+    # ROCm 检测：PyTorch ROCm 把 torch.cuda 接口接到 HIP，torch.version.cuda 也有值，
+    # 但 torch.version.hip 仅在 ROCm 编译版本上非空 —— 这是区分 NV CUDA 与 AMD ROCm 的可靠信号
+    _is_rocm = getattr(torch.version, "hip", None) is not None  # type: ignore[attr-defined]
+    is_half = (_BACKEND == "cuda") and not _is_rocm
     device_str = "cuda" if _BACKEND == "cuda" else "cpu"
+    logger.info(
+        "device select: backend=%s torch.version.cuda=%s torch.version.hip=%s is_rocm=%s is_half=%s",
+        _BACKEND,
+        getattr(torch.version, "cuda", None),
+        getattr(torch.version, "hip", None),
+        _is_rocm, is_half,
+    )
     # DirectML 当前仍走 cpu 设备字符串；torch_directml 的真正接入需要 GPT-SoVITS 代码改造，
     # 此处先用 cpu 兜底保证可用性（AMD 用户落 CPU 模式仍能合成，只是较慢）。
 
@@ -490,6 +503,42 @@ def _force_utf8_io() -> None:
             pass
 
 
+def _apply_perf_env_vars() -> None:
+    """启动期注入 MIOpen / ORT 性能相关环境变量。
+
+    必须在 `import torch` 之前生效（_ensure_pipeline 内才懒导入 torch；这里 setenv 时机够早）。
+
+    MIOpen（AMD ROCm 上的 cuDNN 等价物）：
+      - MIOPEN_FIND_MODE=NORMAL（1）：第一次 find + 写 user db，后续启动 lookup db ms 级；
+        默认的 DYNAMIC_HYBRID(5) 会尝试 AI heuristics，而 gfx1151 缺 gfx908_metadata.tn.model
+        会抛 "Unable to load file" 并降级 WTI fallback —— 改 NORMAL 直接跳过 AI 启发式查找
+      - MIOPEN_DEBUG_DISABLE_FIND_DB=0：保持 db 启用（缓存复用是 ROCm 第二次启动快的关键）
+
+    ONNX Runtime（GPT-SoVITS G2PW 多音字消解用到）：
+      - ORT_DISABLE_ALL_PROVIDERS_BUT_CPU=1：禁止加载 CUDA EP DLL；
+        amd-rocm 包里 onnxruntime 是 onnxruntime-gpu wheel，里面有 cuda EP DLL 但 cublasLt 缺失
+        会抛 "cublasLt64_12.dll missing" 错误日志（虽然最后会 fallback CPU EP），污染 log。
+        强制 CPU EP 既消除 log 噪声，启动也更快（少一次 DLL 加载尝试）
+
+    PyTorch：
+      - PYTORCH_NO_HIP_MEMORY_CACHING（注释中提及）：不开启，让 caching allocator 工作
+
+    用 setdefault：用户/CI 显式覆盖优先。
+    """
+    perf_env = {
+        "MIOPEN_FIND_MODE": "NORMAL",
+        "MIOPEN_DEBUG_DISABLE_FIND_DB": "0",
+        "ORT_DISABLE_ALL_PROVIDERS_BUT_CPU": "1",
+    }
+    applied = []
+    for k, v in perf_env.items():
+        if k not in os.environ:
+            os.environ[k] = v
+            applied.append(f"{k}={v}")
+    if applied:
+        logger.info("perf env vars applied: %s", " ".join(applied))
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     global _BACKEND, _MOCK, _MODEL_ROOT
     _force_utf8_io()  # 第一时间统一 IO 编码，下面所有 print/log 都走 UTF-8
@@ -511,6 +560,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
     )
+
+    # MIOpen / ORT 性能环境变量（必须在 torch / onnxruntime import 前；torch 在 _ensure_pipeline
+    # 内才懒导入，main 后期 setenv 仍来得及）。放在 basicConfig 之后让 logger.info 能输出。
+    _apply_perf_env_vars()
 
     _MOCK = args.mock
     _MODEL_ROOT = Path(args.model_root)
