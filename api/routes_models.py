@@ -4,12 +4,13 @@
 #   - router: APIRouter prefix=/api/models
 #   - GET    /api/models/installed              已安装模型列表
 #   - GET    /api/models/catalog?force=         在线 catalog（缓存 ttl 内不重拉）
+#   - POST   /api/models/catalog/refresh        强制刷新 catalog 缓存（破坏 CDN 边缘缓存）
 #   - DELETE /api/models/{id}                   删除已安装模型
 #   - POST   /api/models/import                 multipart zip 上传 → 解压 → 导入
 #   - POST   /api/models/download/{id}          SSE 流式下载（在 catalog 中找到 id）
-#   - GET    /api/models/runtime/status         本地 TTS 运行时安装状态
-#   - POST   /api/models/runtime/install        SSE 流式安装运行时（仅 win32）
-#   - POST   /api/models/runtime/uninstall      删除已安装运行时
+#   - GET    /api/models/runtime/status         本地 TTS 运行时所有 target 安装状态
+#   - POST   /api/models/runtime/install        SSE 流式安装运行时（仅 win32，body 显式 target）
+#   - POST   /api/models/runtime/uninstall      删除指定 target 的运行时
 # @depends:
 #   - json, logging, tempfile, zipfile (stdlib)
 #   - pathlib
@@ -26,7 +27,9 @@
 #     成功后必须调 invalidate_caches()，让 dispatch + voice 列表与状态同步
 #   - import 仅接收 .zip 文件；zip 内必须含且仅含一个 meta.json，其所在目录视为模型根
 #   - import 走 path traversal 防护（解压前扫描 namelist）
-#   - 路由前缀 /api/models 与现有 /api/models/* 不冲突（新增）
+#   - runtime/status 返回所有 target 状态数组，含 installed/version/latest_version/can_update/can_install
+#   - runtime/install 接收 body 中的 target 参数，不再因 target 不匹配自动 uninstall 旧变体
+#   - 多 target 并存：install 到独立目录，切换 target 只改活跃指向，不删任何已装
 
 from __future__ import annotations
 
@@ -45,7 +48,9 @@ from contract.models import TTSModel
 from contract.ports import ModelCatalog, ModelStore, RuntimeInstaller
 
 from .deps import (
+    _make_runtime_installer,
     get_catalog,
+    get_config,
     get_model_store,
     get_runtime_installer,
     invalidate_caches,
@@ -53,6 +58,8 @@ from .deps import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/models", tags=["models"])
+
+_VALID_TARGETS = ("cpu", "amd-rocm", "nvidia-cuda")
 
 
 def _sse(payload: dict) -> str:
@@ -76,6 +83,18 @@ async def list_catalog(
     catalog: ModelCatalog = Depends(get_catalog),
 ):
     return await catalog.fetch(force=force)
+
+
+@router.post("/catalog/refresh")
+async def refresh_catalog(catalog: ModelCatalog = Depends(get_catalog)):
+    """强制刷新 catalog 缓存（含 CDN 边缘缓存破坏），并返回刷新后的模型列表。"""
+    try:
+        models = await catalog.fetch(force=True)
+        logger.info("catalog refreshed: models=%d", len(models))
+        return {"ok": True, "models_count": len(models)}
+    except ModelError as e:
+        logger.warning("catalog refresh failed: %s", e)
+        raise HTTPException(status_code=502, detail=str(e))
 
 
 # ============== 下载模型 (SSE) ==============
@@ -166,68 +185,115 @@ async def import_model(
 # ============== 本地 TTS 运行时 ==============
 
 
-@router.get("/runtime/status")
-def runtime_status(inst: RuntimeInstaller = Depends(get_runtime_installer)):
-    """返回运行时安装状态。
+async def _fetch_latest_versions(catalog: ModelCatalog) -> dict[str, str]:
+    """从 catalog manifest 读取每个 target 的最新版本号。
 
-    target 字段 = 当前设置选择的 target；
-    installed_target = 实际已装的 target（旧 runtime VERSION 仅含版本号时默认 cpu）。
-    两者不一致时前端可提示"切换后端需重装"。
+    返回 {target: version_str}；若段缺失则 version 为空字符串。
     """
-    installed_target = (
-        inst.installed_target() if hasattr(inst, "installed_target") else None
-    )
+    from tts.catalog_client import GithubReleaseCatalog
+
+    if not isinstance(catalog, GithubReleaseCatalog):
+        return {}
+    try:
+        manifest = await catalog.fetch_raw(force=False)
+    except Exception:
+        logger.warning("fetch_latest_versions: failed to read manifest")
+        return {}
+    out: dict[str, str] = {}
+    for target in _VALID_TARGETS:
+        key = f"windows_x64_{target.replace('-', '_')}"
+        slot = manifest.get(key)
+        if not isinstance(slot, dict):
+            # cpu fallback to legacy "windows_x64"
+            if target == "cpu":
+                slot = manifest.get("windows_x64")
+        ver = ""
+        if isinstance(slot, dict):
+            ver = str(slot.get("version") or manifest.get("version") or "")
+        out[target] = ver
+    return out
+
+
+@router.get("/runtime/status")
+async def runtime_status(
+    catalog: ModelCatalog = Depends(get_catalog),
+):
+    """返回所有 target 的运行时安装状态数组。
+
+    每项含 installed/version/latest_version/can_update/can_install/target。
+    active_target 字段表示当前设置选中的活跃 target。
+    """
+    cfg = get_config()
+    latest = await _fetch_latest_versions(catalog)
+    targets = []
+    for target in _VALID_TARGETS:
+        inst = _make_runtime_installer(target)
+        installed = inst.is_installed()
+        ver = inst.installed_version()
+        latest_ver = latest.get(target, "")
+        can_update = False
+        if installed and ver and latest_ver and ver != latest_ver:
+            can_update = True
+        targets.append({
+            "name": inst.name,
+            "target": target,
+            "installed": installed,
+            "version": ver,
+            "latest_version": latest_ver,
+            "can_update": can_update,
+            "can_install": not installed and bool(latest_ver),
+        })
     return {
-        "name": inst.name,
-        "installed": inst.is_installed(),
-        "version": inst.installed_version(),
-        "target": getattr(inst, "target", "cpu"),
-        "installed_target": installed_target,
-        "target_mismatch": (
-            inst.is_installed()
-            and installed_target is not None
-            and installed_target != getattr(inst, "target", "cpu")
-        ),
+        "targets": targets,
+        "active_target": cfg.tts.local.target,
     }
 
 
 @router.post("/runtime/install")
-async def runtime_install(inst: RuntimeInstaller = Depends(get_runtime_installer)):
+async def runtime_install(body: dict):
+    """安装指定 target 的运行时。
+
+    Body: {"target": "cpu"|"amd-rocm"|"nvidia-cuda"}
+    不再因 target 不匹配自动 uninstall 旧变体；多 target 并存。
+    """
+    target = body.get("target", "cpu")
+    if target not in _VALID_TARGETS:
+        raise ValidationError(f"无效 target: {target}; 有效值: {_VALID_TARGETS}")
+
+    inst = _make_runtime_installer(target)
+
     async def gen() -> AsyncIterator[str]:
         try:
-            # 已装但 target 不匹配（用户切了后端） → 先卸载老变体，再装新变体
-            installed_target = (
-                inst.installed_target() if hasattr(inst, "installed_target") else None
-            )
-            target = getattr(inst, "target", "cpu")
-            if inst.is_installed() and installed_target and installed_target != target:
-                yield _sse({
-                    "phase": "start",
-                    "message": f"检测到已装 target={installed_target}，与当前选择 {target} 不一致，先卸载老变体...",
-                    "target": target,
-                })
-                inst.uninstall()
             async for evt in inst.install():
                 yield _sse(evt)
         except (ModelError, ValidationError) as e:
-            logger.warning("runtime install failed: %s", e)
+            logger.warning("runtime install failed: target=%s error=%s", target, e)
             yield _sse({"phase": "error", "message": str(e)})
             return
         except Exception as e:
-            logger.exception("runtime install unexpected error")
+            logger.exception("runtime install unexpected error: target=%s", target)
             yield _sse({"phase": "error", "message": f"未预期错误: {e}"})
             return
         invalidate_caches()
-        logger.info("runtime installed")
+        logger.info("runtime installed: target=%s", target)
 
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
 @router.post("/runtime/uninstall")
-def runtime_uninstall(inst: RuntimeInstaller = Depends(get_runtime_installer)):
+def runtime_uninstall(body: dict):
+    """卸载指定 target 的运行时。
+
+    Body: {"target": "cpu"|"amd-rocm"|"nvidia-cuda"}
+    """
+    target = body.get("target", "cpu")
+    if target not in _VALID_TARGETS:
+        raise ValidationError(f"无效 target: {target}; 有效值: {_VALID_TARGETS}")
+
+    inst = _make_runtime_installer(target)
     if not inst.is_installed():
-        return {"ok": False, "message": "运行时未安装"}
+        return {"ok": False, "message": f"运行时未安装（target={target}）"}
     inst.uninstall()
     invalidate_caches()
-    logger.info("runtime uninstalled")
-    return {"ok": True}
+    logger.info("runtime uninstalled: target=%s", target)
+    return {"ok": True, "target": target}

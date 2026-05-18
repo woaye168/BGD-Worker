@@ -53,7 +53,7 @@ from tts.catalog_client import GithubReleaseCatalog
 from tts.dispatch_engine import DispatchTTSEngine
 from tts.edge_tts_engine import EdgeTTSEngine
 from tts.local_engine import LocalTTSEngine
-from tts.runtime_installer import LocalTTSRuntimeInstaller
+from tts.runtime_installer import LocalTTSRuntimeInstaller, _manifest_slot_key
 
 
 @lru_cache
@@ -98,10 +98,19 @@ def get_catalog() -> ModelCatalog:
 @lru_cache
 def get_runtime_installer() -> RuntimeInstaller:
     cfg = get_config()
+    return _make_runtime_installer(cfg.tts.local.target)
+
+
+def _make_runtime_installer(target: str) -> RuntimeInstaller:
+    """为指定 target 创建 installer（不缓存，因为 target 是变参）。
+
+    用于 /runtime/status 查询所有 target 状态时按需实例化。
+    """
+    cfg = get_config()
     return LocalTTSRuntimeInstaller(
-        install_dir=cfg.local_tts_runtime_dir(cfg.tts.local.target),
+        install_dir=cfg.local_tts_runtime_dir(target),
         manifest_url=cfg.tts.catalog.url,
-        target=cfg.tts.local.target,
+        target=target,
     )
 
 
