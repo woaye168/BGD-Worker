@@ -26,6 +26,7 @@ from .constants import (
     _HF_DOWNLOAD_DEPS,
     _MINIMAL_DEPS,
     _SERVE_PY,
+    _SERVE_PY_INFER_DEPS,
     _STUB_PACKAGES,
     _VALID_TARGETS,
 )
