@@ -1,4 +1,4 @@
-# @purpose: build_runtime.py 的 Python embeddable / pip / torch 安装与通用工具
+# @purpose: scripts/build_runtime/ 的 Python embeddable / pip / torch 安装与通用工具
 # @layer: build-tool
 # @contract:
 #   - _download(url, target_path)
@@ -157,7 +157,7 @@ def _filter_requirements(src: Path, dst: Path, drop_names: set[str]) -> list[str
             pkg_norm = name_match.group(1).lower().replace("_", "-")
             if pkg_norm in drop_norm:
                 dropped.append(stripped)
-                fout.write(f"# (dropped by build_runtime.py): {raw}")
+                fout.write(f"# (dropped by scripts/build_runtime/): {raw}")
             else:
                 fout.write(raw)
     return dropped
@@ -183,7 +183,7 @@ def _create_stub_packages(python_dir: Path, stubs: dict[str, dict]) -> None:
         if spec["type"] == "alias":
             alias_of = spec["alias_of"]
             init_py.write_text(
-                "# stub by build_runtime.py: " + name + " → " + alias_of + "\n"
+                "# stub by scripts/build_runtime/: " + name + " → " + alias_of + "\n"
                 "from " + alias_of + " import *  # noqa: F401, F403\n"
                 "import " + alias_of + " as _real\n"
                 "import sys as _sys\n"
@@ -195,7 +195,7 @@ def _create_stub_packages(python_dir: Path, stubs: dict[str, dict]) -> None:
             msg = spec.get("error_msg", f"{name} unavailable in this runtime")
             attrs = spec.get("attrs", [])
             lines = [
-                "# stub by build_runtime.py: " + name + " (raises on use)",
+                "# stub by scripts/build_runtime/: " + name + " (raises on use)",
                 "import warnings",
                 "warnings.warn(" + repr(f"{name} stub loaded; calls will raise RuntimeError") + ")",
                 "",

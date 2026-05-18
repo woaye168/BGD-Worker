@@ -26,8 +26,8 @@
 #     旧 runtime 包仅 `<ver>` → 解析时 target 默认 'cpu'
 #   - is_installed = install_dir/VERSION 文件存在；
 #     installed_version() / installed_target() 解析返回各部分
-#   - 切 target 流程：调用方（api.deps）发现 installed_target ≠ cfg.local.target 时，
-#     在 invalidate_caches 前先 uninstall() 旧版，再用新 target 构造 installer
+#   - 多 target 并存：调用方按需为不同 target 构造独立 installer 实例；
+#     切 target 时由 api.deps 的 invalidate_caches 重建 engine 指向新目录，不删旧变体
 #   - install() 是 async generator，产出事件:
 #       {"phase":"start"|"downloading"|"verifying"|"extracting"|"done"|"error", ...,
 #        "target": str}  # 新加 target 字段供前端区分

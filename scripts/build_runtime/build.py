@@ -124,7 +124,7 @@ def build(
 ) -> Path:
     if sys.platform != "win32":
         raise SystemExit(
-            f"build_runtime.py 仅支持 Windows（embeddable 是 Windows 专属），当前 {sys.platform}"
+            f"scripts/build_runtime/ 仅支持 Windows（embeddable 是 Windows 专属），当前 {sys.platform}"
         )
     if not _SERVE_PY.exists():
         raise SystemExit(f"serve.py 不存在：{_SERVE_PY}")
@@ -225,7 +225,7 @@ def build(
         # 输出 catalog 片段（新 schema v2：per-target version），供 CI 抓回 catalog.json
         slot = {
             "version": version,
-            "download_url": f"https://huggingface.co/<HF_REPO>/resolve/main/{out_zip.name}",
+            "download_url": f"https://huggingface.co/woaye168/bgd-worker-npc-voice-gen-runtime/resolve/main/{out_zip.name}",
             "size_bytes": size_bytes,
             "sha256": sha,
         }
