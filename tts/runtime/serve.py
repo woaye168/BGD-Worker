@@ -509,24 +509,23 @@ def _apply_perf_env_vars() -> None:
     必须在 `import torch` 之前生效（_ensure_pipeline 内才懒导入 torch；这里 setenv 时机够早）。
 
     MIOpen（AMD ROCm 上的 cuDNN 等价物）：
-      - MIOPEN_FIND_MODE=NORMAL（1）：第一次 find + 写 user db，后续启动 lookup db ms 级；
-        默认的 DYNAMIC_HYBRID(5) 会尝试 AI heuristics，而 gfx1151 缺 gfx908_metadata.tn.model
-        会抛 "Unable to load file" 并降级 WTI fallback —— 改 NORMAL 直接跳过 AI 启发式查找
-      - MIOPEN_DEBUG_DISABLE_FIND_DB=0：保持 db 启用（缓存复用是 ROCm 第二次启动快的关键）
+      - MIOPEN_FIND_MODE=FAST（2）：**只查 disk cache 不重新评估** —— Kokoro-FastAPI Issue #454
+        在 Strix Halo gfx1151 上实测 12-14× 加速（13s → 1.1s）的关键开关。
+        与 NORMAL（1）的区别：
+          NORMAL = 每次新进程都 search + 评估 solver + 写 user db（per-process penalty）
+          FAST   = 只查 disk cache；hit 直接用（ms 级），miss 走 WTI fallback（一次开销）
+        cache 通过自然合成累积；用户跑过的 conv shape 越多 hit 率越高。
+        首次合成短句仍可能 30s+（cache miss 走 fallback），但跑过同 voice + 类似长度后
+        次启动直接 lookup ms 级。
+      - MIOPEN_DEBUG_DISABLE_FIND_DB=0：保持 db 启用（cache hit 必需）
 
     ONNX Runtime（GPT-SoVITS G2PW 多音字消解用到）：
-      - ORT_DISABLE_ALL_PROVIDERS_BUT_CPU=1：禁止加载 CUDA EP DLL；
-        amd-rocm 包里 onnxruntime 是 onnxruntime-gpu wheel，里面有 cuda EP DLL 但 cublasLt 缺失
-        会抛 "cublasLt64_12.dll missing" 错误日志（虽然最后会 fallback CPU EP），污染 log。
-        强制 CPU EP 既消除 log 噪声，启动也更快（少一次 DLL 加载尝试）
-
-    PyTorch：
-      - PYTORCH_NO_HIP_MEMORY_CACHING（注释中提及）：不开启，让 caching allocator 工作
+      - ORT_DISABLE_ALL_PROVIDERS_BUT_CPU=1：禁止加载 CUDA EP DLL，避免 cublasLt 错误日志
 
     用 setdefault：用户/CI 显式覆盖优先。
     """
     perf_env = {
-        "MIOPEN_FIND_MODE": "NORMAL",
+        "MIOPEN_FIND_MODE": "FAST",
         "MIOPEN_DEBUG_DISABLE_FIND_DB": "0",
         "ORT_DISABLE_ALL_PROVIDERS_BUT_CPU": "1",
     }
