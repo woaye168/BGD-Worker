@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from contract.errors import ModelError, NotFoundError, ValidationError
 from contract.models import TTSModel
@@ -72,6 +72,43 @@ def _sse(payload: dict) -> str:
 @router.get("/installed", response_model=list[TTSModel])
 def list_installed(store: ModelStore = Depends(get_model_store)):
     return store.list_installed()
+
+
+@router.get("/installed/{id}/audition")
+def audition_installed(id: str, store: ModelStore = Depends(get_model_store)):
+    """直接返回模型 meta.json 配置的参考音频文件（用于"试听这个 voice 长什么样"）。
+
+    不走 TTS 引擎合成（避免拖累用户、不污染 voice cache）；直接流式吐 ref_audio 原始文件。
+    扩展名按文件后缀映射 media type（wav/mp3/ogg/flac/m4a/opus 等）。
+    """
+    model = store.get(id)
+    if model is None:
+        raise HTTPException(status_code=404, detail=f"模型未安装: {id}")
+    model_dir = store.root() / id
+    meta_file = model_dir / "meta.json"
+    if not meta_file.exists():
+        raise HTTPException(status_code=404, detail=f"模型 meta.json 不存在: {meta_file}")
+    try:
+        meta = json.loads(meta_file.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"meta.json 解析失败: {e}") from e
+    ref_name = meta.get("ref_audio") or "ref.wav"
+    ref_path = model_dir / ref_name
+    if not ref_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"参考音频文件不存在: {ref_path}（meta.json 字段 ref_audio={ref_name!r}）",
+        )
+    ext = ref_path.suffix.lstrip(".").lower() or "wav"
+    media_types = {
+        "wav": "audio/wav", "mp3": "audio/mpeg", "ogg": "audio/ogg",
+        "opus": "audio/opus", "flac": "audio/flac", "m4a": "audio/mp4", "aac": "audio/aac",
+    }
+    return FileResponse(
+        ref_path,
+        media_type=media_types.get(ext, "application/octet-stream"),
+        filename=f"{id}_ref.{ext}",
+    )
 
 
 # ============== 在线 catalog ==============

@@ -39,9 +39,12 @@ from dialogue.service import DialogueService
 from synthesis.exporter import build_zip
 from synthesis.orchestrator import SynthesisOrchestrator
 
+from contract.config import AppConfig
+
 from .deps import (
     get_audio_store,
     get_character_repo,
+    get_config,
     get_dialogue_service,
     get_orchestrator,
     get_tts_engine,
@@ -151,15 +154,26 @@ def get_audio(
 
 
 @router.post("/export")
-def export_zip(
+async def export_zip(
     req: SynthesisRequest,
     orch: SynthesisOrchestrator = Depends(get_orchestrator),
     char_repo: CharacterRepository = Depends(get_character_repo),
     store: AudioStore = Depends(get_audio_store),
+    cfg: AppConfig = Depends(get_config),
 ):
     targets = orch.select(req.scope, req.dialogue_ids)
     characters_by_id = {c.id: c for c in char_repo.list()}
-    data = build_zip(targets, characters_by_id, store)
+    try:
+        data = await build_zip(
+            targets,
+            characters_by_id,
+            store,
+            export_format=cfg.tts.export_format,
+            ffmpeg_path=cfg.tts.ffmpeg_path,
+        )
+    except ValueError as e:
+        # 未支持的格式
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return Response(
         content=data,
         media_type="application/zip",

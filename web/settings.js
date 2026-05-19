@@ -18,12 +18,17 @@ $('#settings').innerHTML = `
         <input id="setAudioDir" placeholder="例：D:/projects/voices">
         <small class="muted">当前生效：<span class="mono" id="setAudioDirActive">—</span></small>
       </div>
-      <div class="field tight" style="min-width:160px"><label>音频格式</label>
-        <select id="setOutputFormat">
-          <option value="ogg">OGG（默认，推荐）</option>
-          <option value="mp3">MP3</option>
-          <option value="wav">WAV</option>
+      <div class="field tight" style="min-width:200px"><label>导出格式（ZIP 内文件）</label>
+        <select id="setExportFormat">
+          <option value="wav">WAV（无损，默认）</option>
+          <option value="mp3">MP3（192k 通用）</option>
+          <option value="ogg">OGG Vorbis</option>
+          <option value="opus">Opus</option>
+          <option value="flac">FLAC（无损压缩）</option>
+          <option value="m4a">M4A / AAC</option>
+          <option value="aac">AAC（ADTS）</option>
         </select>
+        <small class="muted">合成时始终保留原始格式（Edge=mp3, 本地=wav）；切换此项<b>不需重新合成</b>，导出时实时转码</small>
       </div>
     </div>
 
@@ -92,7 +97,7 @@ async function loadSettings() {
   $('#setLogEnabled').checked = !!r.settings.log.enabled;
   $('#setLogLevel').value = r.settings.log.level || 'info';
   $('#setLogToFile').checked = !!r.settings.log.to_file;
-  $('#setOutputFormat').value = r.settings.tts.output_format || 'ogg';
+  $('#setExportFormat').value = (r.settings.tts.export_format) || 'wav';
   $('#setEngine').value = r.settings.tts.engine || 'edge';
   $('#setLocalTarget').value = (r.settings.tts.local && r.settings.tts.local.target) || 'cpu';
   _originalTarget = $('#setLocalTarget').value;
@@ -116,7 +121,7 @@ async function saveSettings() {
     },
     tts: {
       engine: $('#setEngine').value,
-      output_format: $('#setOutputFormat').value,
+      export_format: $('#setExportFormat').value,
       local: {
         target: $('#setLocalTarget').value,
         sample_steps: parseInt($('#setSampleSteps').value, 10) || 8,

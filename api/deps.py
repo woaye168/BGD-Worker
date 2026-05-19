@@ -117,15 +117,12 @@ def _make_runtime_installer(target: str) -> RuntimeInstaller:
 @lru_cache
 def get_tts_engine() -> TTSEngine:
     cfg = get_config()
-    edge = EdgeTTSEngine(
-        output_format=cfg.tts.output_format,
-        ffmpeg_path=cfg.tts.ffmpeg_path,
-    )
+    # 引擎原生输出：edge=mp3, local=wav；不再传 output_format / ffmpeg_path
+    # 转码统一在 synthesis/exporter.py 导出 zip 时按 cfg.tts.export_format 处理
+    edge = EdgeTTSEngine()
     local = LocalTTSEngine(
         runtime_dir=cfg.active_local_tts_runtime_dir,
         model_store=get_model_store(),
-        output_format=cfg.tts.output_format,
-        ffmpeg_path=cfg.tts.ffmpeg_path,
         target=cfg.tts.local.target,
         synthesize_timeout_sec=cfg.tts.local.synthesize_timeout_sec,
         log_dir=cfg.log_dir,

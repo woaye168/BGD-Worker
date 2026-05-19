@@ -41,7 +41,8 @@ function modelCard(m, kind /* 'installed' | 'catalog' */) {
   const character = m.character ? `<span class="muted">· ${escapeHtml(m.character)}</span>` : '';
   const size = m.size_bytes ? `<span class="muted">${bytesHuman(m.size_bytes)}</span>` : '';
   const action = kind === 'installed'
-    ? `<button class="danger" data-model-act="delete" data-id="${escapeHtml(m.id)}">删除</button>`
+    ? `<button class="secondary" data-model-act="audition" data-id="${escapeHtml(m.id)}">▶ 试听</button>
+       <button class="danger" data-model-act="delete" data-id="${escapeHtml(m.id)}" style="margin-left:6px">删除</button>`
     : `<button class="primary" data-model-act="download" data-id="${escapeHtml(m.id)}">下载</button>`;
   return `
     <div class="card">
@@ -71,6 +72,25 @@ async function renderInstalled() {
   el.querySelectorAll('button[data-model-act="delete"]').forEach(b => {
     b.addEventListener('click', () => deleteModel(b.dataset.id));
   });
+  el.querySelectorAll('button[data-model-act="audition"]').forEach(b => {
+    b.addEventListener('click', () => auditionModel(b.dataset.id));
+  });
+}
+
+function auditionModel(id) {
+  // 用 <audio> 元素播放 /api/models/installed/{id}/audition 流式返回的 ref_audio
+  // 简单实现：直接在文档内插入一个 <audio> 控件并自动播
+  // 多次点击会复用同一个控件
+  let player = document.getElementById('modelAuditionPlayer');
+  if (!player) {
+    player = document.createElement('audio');
+    player.id = 'modelAuditionPlayer';
+    player.controls = true;
+    player.style.cssText = 'position:fixed;right:20px;bottom:20px;width:300px;z-index:9999;background:#fff;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.2)';
+    document.body.appendChild(player);
+  }
+  player.src = `/api/models/installed/${encodeURIComponent(id)}/audition?_t=${Date.now()}`;
+  player.play().catch(e => console.warn('audio play failed:', e));
 }
 
 async function renderCatalog() {

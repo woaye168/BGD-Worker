@@ -10,7 +10,7 @@
 #   - ../contract/models.py: Emotion, TTSModel
 #   - ../contract/errors.py: TTSError
 #   - ../contract/ports.py: ModelStore
-#   - ./_ffmpeg.py: resolve_ffmpeg, transcode
+#   - （无 ffmpeg 依赖：合成路径不转码，导出阶段才走 _ffmpeg.transcode）
 # @invariants:
 #   - 平台门禁：sys.platform != 'win32' 时 synthesize 抛 TTSError("暂不支持")；list_voices 不抛
 #   - 运行时门禁：runtime_dir/VERSION 不存在 → synthesize 抛 TTSError 提示去「软件设置」装运行时
@@ -22,7 +22,7 @@
 #     - close() 主动结束子进程；模块 atexit 钩兜底
 #   - HTTP 调用：urllib + asyncio.to_thread；POST /synthesize 收 audio/wav bytes
 #   - voice 入参假定已被 dispatch 层剥掉 "local:" 前缀（裸 model_id）
-#   - output_extension：runtime 产 wav；ogg 经 _ffmpeg.transcode 转码（缺 ffmpeg 时构造期降级 wav）
+#   - output_extension：固定 "wav"（runtime 原生输出，不再 transcode；导出阶段统一转码）
 #   - backend 自动推导：target → serve.py --backend auto（serve.py detect_backend 自动选）；
 #     用户不再可见 backend 维度，旧 settings.json 的 backend 字段被 Pydantic 忽略
 
@@ -47,7 +47,7 @@ from contract.errors import TTSError
 from contract.models import Emotion
 from contract.ports import ModelStore
 
-from ._ffmpeg import resolve_ffmpeg, transcode
+# 不再 import _ffmpeg：合成路径不转码（设计：与导出解耦）
 
 logger = logging.getLogger(__name__)
 
@@ -156,8 +156,6 @@ class LocalTTSEngine:
         self,
         runtime_dir: Path,
         model_store: ModelStore,
-        output_format: str = "ogg",
-        ffmpeg_path: Optional[str] = None,
         target: str = "cpu",
         synthesize_timeout_sec: float = _DEFAULT_SYNTHESIZE_TIMEOUT_SEC,
         log_dir: Optional[Path] = None,
@@ -165,15 +163,9 @@ class LocalTTSEngine:
     ) -> None:
         self._runtime_dir = Path(runtime_dir)
         self._models = model_store
-        self._ffmpeg = resolve_ffmpeg(ffmpeg_path)
-        requested = output_format
-        fmt = output_format if output_format in ("ogg", "mp3", "wav") else "wav"
-        if fmt == "ogg" and self._ffmpeg is None:
-            fmt = "wav"  # local 原生产 wav；缺 ffmpeg 时无法转 ogg，降级到 wav
-        elif fmt == "mp3":
-            # local 无 mp3 编码器；与 edge 不一致时仅当 single-engine 配置才走 mp3
-            fmt = "wav"
-        self._format = fmt
+        # 本地引擎始终返回原始 WAV；不再 transcode（合成路径与导出解耦的设计）
+        # 转码统一在 synthesis/exporter.py 导出 zip 阶段做
+        self._format = "wav"
         self._target = target
         self._synthesize_timeout = max(30.0, float(synthesize_timeout_sec))
         self._sample_steps = max(2, min(32, int(sample_steps)))
@@ -184,10 +176,10 @@ class LocalTTSEngine:
         self._port: Optional[int] = None
         self._spawn_lock = asyncio.Lock()
         logger.info(
-            "local_tts engine: requested=%s effective=%s target=%s timeout=%.0fs"
-            " sample_steps=%d runtime=%s log_dir=%s ffmpeg=%s",
-            requested, self._format, self._target, self._synthesize_timeout,
-            self._sample_steps, self._runtime_dir, self._log_dir, self._ffmpeg or "<none>",
+            "local_tts engine: format=wav (always) target=%s timeout=%.0fs"
+            " sample_steps=%d runtime=%s log_dir=%s",
+            self._target, self._synthesize_timeout,
+            self._sample_steps, self._runtime_dir, self._log_dir,
         )
 
     @property
@@ -318,10 +310,8 @@ class LocalTTSEngine:
                 f"本地 TTS 运行时通信失败：{hint}（{reason}）"
                 f"{log_hint}\nruntime 日志末尾：\n{tail}"
             ) from e
-        # 7. 转码（如需要）
-        if self._format == "wav":
-            return wav
-        return await transcode(wav, self._format, self._ffmpeg)
+        # 7. 直接返回原始 WAV，不转码（导出 zip 时 synthesis.exporter 才走 ffmpeg）
+        return wav
 
     async def _ensure_runtime_running(self) -> int:
         """懒启动 runtime 子进程；幂等。"""

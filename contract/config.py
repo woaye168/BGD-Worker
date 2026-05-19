@@ -115,7 +115,13 @@ class AISettings(BaseModel):
 class TTSSettings(BaseModel):
     engine: str = "edge"
     default_voice: str = "zh-CN-XiaoxiaoNeural"
-    output_format: str = "ogg"
+    # output_format 是历史字段，已废弃：合成路径不再 transcode，
+    # 引擎原生输出（edge=mp3，local=wav）。保留字段避免 Pydantic 加载旧 settings.json 抛 extra-key 错。
+    # 真正的输出格式控制是 export_format（仅在导出 zip 时由 ffmpeg 转码）。
+    output_format: str = "ogg"  # deprecated, see export_format
+    # 导出 zip 时统一转码到此格式（ffmpeg）。可选：wav/mp3/ogg/opus/flac/m4a/aac
+    # 默认 wav（无损 + 通用）；改这个字段不需要重新合成已有对话——导出时实时转
+    export_format: str = "wav"
     ffmpeg_path: Optional[str] = None
     rest_base_url: Optional[str] = None
     rest_model: Optional[str] = None
