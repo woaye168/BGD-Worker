@@ -31,6 +31,7 @@ $('#settings').innerHTML = `
     <div class="row mb-2">
       <div class="field tight" style="min-width:170px"><label>默认引擎（voice 无前缀时回落）</label><select id="setEngine"><option value="edge">Edge TTS（云端，免装）</option><option value="local">本地（GPT-SoVITS 等）</option></select></div>
       <div class="field tight" style="min-width:220px"><label>推理硬件变体（runtime target）</label><select id="setLocalTarget"><option value="cpu">CPU（兜底，所有机器可用）</option><option value="amd-rocm">AMD ROCm（Strix Halo / AI Max 395）</option><option value="nvidia-cuda">NVIDIA CUDA（RTX 等 N 卡）</option></select></div>
+      <div class="field tight" style="min-width:200px"><label>V4 vocoder 采样步数（性能）</label><select id="setSampleSteps"><option value="4">4 步（极速 ~1.3× rt，略损）</option><option value="8">8 步（默认，接近实时 ~0.9× rt）</option><option value="16">16 步（质量略好，慢 2×）</option><option value="32">32 步（最高质量，慢 4×）</option></select></div>
     </div>
     <div class="hint" id="targetChangeHint" style="display:none">⚠️ 切换 target 后需要重新安装对应变体的运行时，已有的其它变体不会删除。</div>
     <div class="row mb-2">
@@ -96,6 +97,7 @@ async function loadSettings() {
   $('#setLocalTarget').value = (r.settings.tts.local && r.settings.tts.local.target) || 'cpu';
   _originalTarget = $('#setLocalTarget').value;
   $('#targetChangeHint').style.display = 'none';
+  $('#setSampleSteps').value = String((r.settings.tts.local && r.settings.tts.local.sample_steps) || 8);
   $('#setCatalogUrl').value = (r.settings.tts.catalog && r.settings.tts.catalog.url) || '';
   $('#setAiProvider').value = (r.settings.ai && r.settings.ai.provider) || '';
   $('#setAiBaseUrl').value = (r.settings.ai && r.settings.ai.base_url) || '';
@@ -117,6 +119,7 @@ async function saveSettings() {
       output_format: $('#setOutputFormat').value,
       local: {
         target: $('#setLocalTarget').value,
+        sample_steps: parseInt($('#setSampleSteps').value, 10) || 8,
       },
       catalog: { url: $('#setCatalogUrl').value.trim() },
     },

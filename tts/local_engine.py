@@ -161,6 +161,7 @@ class LocalTTSEngine:
         target: str = "cpu",
         synthesize_timeout_sec: float = _DEFAULT_SYNTHESIZE_TIMEOUT_SEC,
         log_dir: Optional[Path] = None,
+        sample_steps: int = 8,
     ) -> None:
         self._runtime_dir = Path(runtime_dir)
         self._models = model_store
@@ -175,6 +176,7 @@ class LocalTTSEngine:
         self._format = fmt
         self._target = target
         self._synthesize_timeout = max(30.0, float(synthesize_timeout_sec))
+        self._sample_steps = max(2, min(32, int(sample_steps)))
         self._log_dir = Path(log_dir) if log_dir else None
         self._log_file: Optional[Path] = None
         self._log_handle = None  # 文件句柄，传给 Popen 当 stdout/stderr
@@ -183,9 +185,9 @@ class LocalTTSEngine:
         self._spawn_lock = asyncio.Lock()
         logger.info(
             "local_tts engine: requested=%s effective=%s target=%s timeout=%.0fs"
-            " runtime=%s log_dir=%s ffmpeg=%s",
+            " sample_steps=%d runtime=%s log_dir=%s ffmpeg=%s",
             requested, self._format, self._target, self._synthesize_timeout,
-            self._runtime_dir, self._log_dir, self._ffmpeg or "<none>",
+            self._sample_steps, self._runtime_dir, self._log_dir, self._ffmpeg or "<none>",
         )
 
     @property
@@ -283,6 +285,7 @@ class LocalTTSEngine:
                     "rate": rate,
                     "pitch": pitch,
                     "volume": volume,
+                    "sample_steps": self._sample_steps,
                 },
                 self._synthesize_timeout,
             )

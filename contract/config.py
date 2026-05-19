@@ -85,6 +85,13 @@ class LocalTTSSettings(BaseModel):
     # GPT≈150MB、SoVITS≈80MB）+ 切 voice 权重，CPU 模式可能 300-600s；慢机器/老 HDD 还要更久。
     # 默认 600s 兼顾"不假性失败"和"真死锁也别等太久"；UI 设置可调。
     synthesize_timeout_sec: int = 600
+    # GPT-SoVITS V4 vocoder CFM 去噪步数（最大性能影响参数）：
+    # - 8（默认）：质量基本无损 + 接近实时（AMD AI Max 395 实测 0.9× rt）
+    # - 4：超实时（1.27× rt）；轻微失真但通常可接受
+    # - 16/32：质量略好但慢 2-4×
+    # 实测见 scripts/benchmark_v4_speed.py：32→8 速度 3.7×，音质差异主观难辨。
+    # 范围 [2, 32]；UI 设置页可调
+    sample_steps: int = 8
 
 
 class CatalogSettings(BaseModel):

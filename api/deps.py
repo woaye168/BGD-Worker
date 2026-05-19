@@ -129,6 +129,7 @@ def get_tts_engine() -> TTSEngine:
         target=cfg.tts.local.target,
         synthesize_timeout_sec=cfg.tts.local.synthesize_timeout_sec,
         log_dir=cfg.log_dir,
+        sample_steps=cfg.tts.local.sample_steps,
     )
     return DispatchTTSEngine(sub_engines={"edge": edge, "local": local})
 

@@ -58,6 +58,12 @@ class SynthesizeReq(BaseModel):
     rate: float = 1.0
     pitch: float = 1.0
     volume: float = 1.0
+    # V4 vocoder CFM 去噪步数（最大性能影响参数）：
+    #   - 默认 8：质量基本无损，速度接近实时（~0.9× rt on AMD AI Max 395 iGPU）
+    #   - 4：超实时（1.27× rt），略有失真但通常可接受
+    #   - 16/32：质量稍好但慢 2-4×
+    # 主 app 从 cfg.tts.local.sample_steps 传；前端设置页可选
+    sample_steps: int = 8
 
 
 # 全局后端 + 模式（main 启动期写入；handler 只读）
@@ -370,6 +376,7 @@ def synthesize_wav(
     rate: float = 1.0,
     pitch: float = 1.0,
     volume: float = 1.0,
+    sample_steps: int = 8,
 ) -> bytes:
     if _MOCK:
         logger.info("mock synthesize: text=%r model=%s", text[:30], model_id)
@@ -390,6 +397,14 @@ def synthesize_wav(
                 model_id,
             )
 
+        # sample_steps 兜底（防 UI/前端传 0 / 负数 / 太大）
+        steps = max(2, min(32, int(sample_steps)))
+
+        # 完整参数集合，对齐 GPT-SoVITS api_v2.py 默认值
+        # 关键 perf 参数：
+        #   sample_steps（CFM 去噪步数）：8 是质量速度黄金平衡，可由调用方覆盖
+        #   parallel_infer=True：句内并行加速
+        #   super_sampling=False：4× 上采样会再慢一倍，默认关
         req = {
             "text": text,
             "text_lang": meta["text_lang"],
@@ -398,14 +413,27 @@ def synthesize_wav(
             "prompt_lang": meta["ref_lang"],
             "text_split_method": "cut5",
             "batch_size": 1,
+            "batch_threshold": 0.75,
+            "split_bucket": True,
             "streaming_mode": False,
             "speed_factor": float(rate) if rate > 0 else 1.0,
+            "fragment_interval": 0.3,
+            "seed": -1,
+            # GPT 采样参数（api_v2 默认）
+            "top_k": 5,
+            "top_p": 1.0,
+            "temperature": 1.0,
+            "repetition_penalty": 1.35,
+            "parallel_infer": True,
+            # V4 vocoder CFM 步数（最大性能影响参数）
+            "sample_steps": steps,
+            "super_sampling": False,
             # GPT-SoVITS 不直接吃 pitch/volume；忽略 + 留给主 app 用 _ffmpeg 后处理（未来）
         }
         t_infer = time.time()
         logger.info(
-            "synthesize start: model=%s text_len=%d text_preview=%r emotion=%s rate=%.2f",
-            model_id, len(text), text[:50], emotion, rate,
+            "synthesize start: model=%s text_len=%d text_preview=%r emotion=%s rate=%.2f sample_steps=%d",
+            model_id, len(text), text[:50], emotion, rate, steps,
         )
         chunks = []
         sr = 32000
@@ -458,6 +486,7 @@ def _build_app():
                 rate=req.rate,
                 pitch=req.pitch,
                 volume=req.volume,
+                sample_steps=req.sample_steps,
             )
         except FileNotFoundError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
